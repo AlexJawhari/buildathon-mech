@@ -33,7 +33,7 @@ class Mech:
         s.hp = s.max_hp = hp; s.energy = 100.0; s.alive = True; s.death_t = None
         s.cmd = {"move": [0, 0], "aim": list(s.aim), "fire": [False, False], "boost": False}
         s.cd = [0.0, 0.0]; s.ammo = 12; s.reload = 0.0; s.charge = 0.0; s.slot1 = None
-        s.last_dmg = -99.0; s.last_spend = -99.0; s.step_t = 0.0; s.dealt = 0.0; s.cubes = 0; s.dmgm = 1.0; s.armor = 0.0
+        s.last_dmg = -99.0; s.last_spend = -99.0; s.step_t = 0.0; s.mag = 12; s.rl = 2.4; s.cdm = 1.0; s.dealt = 0.0; s.cubes = 0; s.dmgm = 1.0; s.armor = 0.0
 
 
 class Sim:
@@ -76,6 +76,7 @@ class Sim:
                 if not s.w.blocked_nav(*p):
                     break
             s.crates.append({"id": 1000 + k, "pos": [p[0], p[1], s.w.ground(*p)], "hp": 300.0})
+        s.drops = []; s.drops_called = 0
         s.cubes = []; s.cube_id = 5000; s.offer = None; s.offer_q = 0; s.offer_n = 0; s.picked = []
         s.seen = {}  # for bot: id -> last seen t
         s.squad_known_until = -1.0; s.squad_last = None
@@ -196,9 +197,9 @@ class Sim:
         if m.reload > 0:
             m.reload -= DT
             if m.reload <= 0:
-                m.ammo = 12; m.reload = 0.0
-        if m.cmd.get("reload") and m.reload <= 0 and m.ammo < 12:
-            m.reload = W["gun"]["reload"]
+                m.ammo = m.mag; m.reload = 0.0
+        if m.cmd.get("reload") and m.reload <= 0 and m.ammo < m.mag:
+            m.reload = m.rl
         if f[0] and m.cd[0] <= 0 and m.ammo > 0 and m.reload <= 0 and m.charge <= 0:
             dx, dy, dz = s.aim_vec(m)
             sg = math.radians(W["gun"]["spread_deg"]) + math.radians(getattr(m, "extra_sigma", 0.0))
@@ -206,9 +207,9 @@ class Sim:
             v = W["gun"]["speed"]
             s.bullets.append(dict(by=m.id, x=m.pos[0] + 3 * dx, y=m.pos[1] + 3 * dy, z=m.pos[2] + 7 + 3 * dz,
                                   vx=v * math.cos(pit) * math.cos(yaw), vy=v * math.cos(pit) * math.sin(yaw), vz=v * math.sin(pit), d=0.0, ox=m.pos[0], oy=m.pos[1]))
-            m.cd[0] = W["gun"]["cooldown"]; m.ammo -= 1; s.shots += 1; s.sb[m.id] = s.sb.get(m.id, 0) + 1
+            m.cd[0] = W["gun"]["cooldown"] * m.cdm; m.ammo -= 1; s.shots += 1; s.sb[m.id] = s.sb.get(m.id, 0) + 1
             if m.ammo == 0:
-                m.reload = W["gun"]["reload"]
+                m.reload = m.rl
             s.sound("gun", m)
         if m.slot1 == "lightning" and f[1] and m.cd[1] <= 0 and m.energy >= 3:
             m.energy -= 3; m.last_spend = s.t; m.cd[1] = W["lightning"]["cooldown"]; s.sound("lightning", m)
@@ -295,6 +296,28 @@ class Sim:
 
     def env_step(s):
         me = s.mechs[0]
+        if s.drops_called < 3 and s.t >= (70, 140, 210)[s.drops_called]:
+            zc_, zr_, p_, _ = s.zone()
+            while True:
+                a = s.rng.uniform(0, TAU); r = p_["nr"] * 0.7 * math.sqrt(s.rng.random())
+                q = (p_["nc"][0] + r * math.cos(a), p_["nc"][1] + r * math.sin(a))
+                if not s.w.blocked_nav(*q):
+                    break
+            s.drops.append({"id": 20000 + s.drops_called, "pos": [q[0], q[1], s.w.ground(*q)], "land": s.t + 25, "prog": 0.0})
+            s.drops_called += 1
+        for d in list(s.drops):
+            if s.t < d["land"] or not me.alive:
+                continue
+            ins = [m for m in s.mechs if m.alive and math.hypot(m.pos[0] - d["pos"][0], m.pos[1] - d["pos"][1]) < 8]
+            if len(ins) == 1 and ins[0].id == 0:
+                d["prog"] += DT
+                if d["prog"] >= 4:
+                    s.drops.remove(d)
+                    for _k in range(3):
+                        s.cubes.append({"id": s.cube_id, "pos": [d["pos"][0] + _k, d["pos"][1], d["pos"][2]]}); s.cube_id += 1
+                    me.hp = me.max_hp; me.energy = 100.0
+            elif len(ins) >= 1 and d["prog"] > 0:
+                d["prog"] = 0.0
         for n in s.npcs:
             if not n["alive"] or not me.alive:
                 continue
@@ -325,7 +348,7 @@ class Sim:
                         s.offer_q += 1
             if s.offer is None and s.offer_q > 0:
                 s.offer_q -= 1; s.offer_n += 1
-                ids = s.rng.sample(["plating", "armor", "servos", "capacitor", "reactor", "nanites", "gyros", "sensors", "gun_damage", "gun_rate", "jets"], 3)
+                ids = s.rng.sample(["plating", "armor", "servos", "capacitor", "reactor", "nanites", "gyros", "sensors", "gun_damage", "gun_rate", "gun_mag", "jets"], 3)
                 s.offer = {"id": s.offer_n, "expires": s.t + 5, "choices": [{"id": i, "name": i, "desc": ""} for i in ids]}
             if s.offer and s.t >= s.offer["expires"]:
                 s.apply_offer(0)
@@ -337,6 +360,10 @@ class Sim:
             new_max = 1400 * (1 + 0.04 * k) * (1.15 ** s.picked.count("plating")); me.hp += new_max - me.max_hp; me.max_hp = new_max
         elif u == "armor":
             me.armor += 0.08
+        elif u == "gun_mag":
+            me.mag += 8; me.rl *= 0.8
+        elif u == "gun_rate":
+            me.cdm *= 0.87
         elif u == "gun_damage":
             me.dmgm = (1 + 0.04 * k) * (1.15 ** s.picked.count("gun_damage"))
         s.events[0].append({"type": "upgrade", "id": u})
@@ -387,7 +414,7 @@ class Sim:
                 snd.append({"kind": kind, "bearing": math.atan2(y - me.pos[1], x - me.pos[0]) + s.rng.gauss(0, math.radians(7)),
                             "dist": "near" if d < 60 else "mid" if d < 160 else "far", "age": s.t - t})
         zc, zr, p, dps = s.zone()
-        ws = [{"kind": "gun", "cooldown": me.cd[0], "ammo": me.ammo, "reload": max(0, me.reload), "stats": dict(W["gun"])}, None]
+        ws = [{"kind": "gun", "cooldown": me.cd[0], "ammo": me.ammo, "reload": max(0, me.reload), "stats": dict(W["gun"], mag=me.mag, reload=me.rl, cooldown=0.24 * me.cdm)}, None]
         if me.slot1:
             ws[1] = {"kind": me.slot1, "cooldown": me.cd[1], "stats": dict(W[me.slot1])}
             if me.slot1 == "laser":
@@ -399,7 +426,7 @@ class Sim:
                 "self": {"id": 0, "pos": list(me.pos), "vel": list(me.vel), "aim": list(me.aim), "hp": me.hp, "max_hp": me.max_hp, "energy": me.energy,
                          "max_energy": 100, "grounded": True, "cubes": me.cubes, "upgrades": list(s.picked), "in_zone": math.hypot(me.pos[0] - zc[0], me.pos[1] - zc[1]) < zr,
                          "weapons": ws, "stats": dict(CFG["mech"])},
-                "mechs": vis, "projectiles": projs, "crates": crates, "cubes": cubes, "pickups": near_p, "sounds": snd, "beams": [], "events": ev, "drops": [],
+                "mechs": vis, "projectiles": projs, "crates": crates, "cubes": cubes, "pickups": near_p, "sounds": snd, "beams": [], "events": ev, "drops": [{"id": d["id"], "pos": d["pos"], "radius": 8, "lands_in": max(0.0, d["land"] - s.t), "capture_s": 4, "progress": d["prog"], "holder": None} for d in s.drops],
                 "zone": {"center": zc, "radius": zr, "next_center": p["nc"], "next_radius": p["nr"], "shrink_start": p["ss"], "shrink_end": p["se"], "dps": dps},
                 "offer": s.offer}
 

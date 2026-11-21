@@ -15,8 +15,9 @@ TAU = math.tau
 ADJ = [(1, 0, 1.0), (-1, 0, 1.0), (0, 1, 1.0), (0, -1, 1.0), (1, 1, 1.414), (1, -1, 1.414), (-1, 1, 1.414), (-1, -1, 1.414)]
 UPG = ["nanites", "plating", "armor", "gun_damage", "servos", "reactor", "gun_mag", "gun_rate", "capacitor", "gyros", "lightning_efficiency",
        "lightning_chain", "laser_damage", "sensors", "jets"]
+UPG2 = ["gun_mag", "gun_damage", "plating", "armor", "gun_rate", "nanites", "lightning_efficiency", "lightning_chain", "laser_damage", "servos", "reactor", "capacitor", "gyros", "sensors", "jets"]
 PICK_W = {"lightning": 3, "laser": 2}
-P = {"retreat_hp": 0.5, "outnum": 2, "lo": 55, "hi": 110, "home_frac": 0.9, "scan": 0.28, "strafe": 1.0, "near_lo": -0.7, "flip_lo": 0.4, "flip_hi": 1.1, "retreat_jit": 0.0, "farm_until": 0, "farm_r": 100, "hyst": 1, "pick_r": 90, "cube_r": 45, "tol": 1.0, "stay": 400, "fire_max": 80}
+P = {"retreat_hp": 0.5, "outnum": 2, "lo": 55, "hi": 110, "home_frac": 0.9, "scan": 0.28, "strafe": 1.0, "near_lo": -0.7, "flip_lo": 0.4, "flip_hi": 1.1, "retreat_jit": 0.0, "farm_until": 200, "farm_r": 100, "hyst": 1, "pick_r": 90, "cube_r": 45, "tol": 1.0, "stay": 200, "fire_max": 999, "upg": 1, "tscore": 1, "pmem": 1, "drop_r": 300, "engage": 0, "sticky": 0, "sneak": 0}
 if os.environ.get("MECH_P"):
     P.update(json.loads(os.environ["MECH_P"]))
 
@@ -30,7 +31,7 @@ def dist2(a, b):
 
 
 class Bot:
-    name = "mech-stealth"
+    name = "mech-econ2"
 
     def __init__(self, hello):
         cfg = hello["config"]
@@ -61,6 +62,7 @@ class Bot:
         self.dmg_bearing = None
         self.tgt_id = None
         self.healing = False
+        self.pmem = {}
         self.stay_spot = None
 
     # ---------------------------------------------------------------- navigation
@@ -301,9 +303,16 @@ class Bot:
         act = {"tick": obs["tick"]}
         if obs["offer"]:
             ids = [c["id"] for c in obs["offer"]["choices"]]
-            order = sorted(range(len(ids)), key=lambda i: UPG.index(ids[i]) if ids[i] in UPG else 99)
+            up = UPG2 if P["upg"] else UPG
+            order = sorted(range(len(ids)), key=lambda i: up.index(ids[i]) if ids[i] in up else 99)
             act["pick"] = order[0]
         hp, mhp = me["hp"], me["max_hp"]
+        seen_ids = set()
+        for p in obs["pickups"]:
+            self.pmem[p["id"]] = (p["kind"], p["pos"]); seen_ids.add(p["id"])
+        for i, (k_, pp_) in list(self.pmem.items()):
+            if i not in seen_ids and dist2(pp_, pos) < 30:
+                del self.pmem[i]
         for e in obs["events"]:
             if e["type"] == "damaged" and e.get("by") is not None:
                 self.last_dmg_t = t
@@ -334,12 +343,24 @@ class Bot:
             m["los"] = self.w.los((pos[0], pos[1], mz), (m["pos"][0], m["pos"][1], m["pos"][2] + 4.5), 2.5)
         if close:
             vis = [m for m in close[:6] if m["los"]] or close
-            target = vis[0]; tkind = "mech"
-            for m in vis:
-                if m["id"] == self.tgt_id and m["d"] < vis[0]["d"] + 25:
-                    target = m
-            self.tgt_id = target["id"]
-        elif hp > 0.6 * mhp and t < P["farm_until"] and self.pick_goal(obs, wpn) is None:
+            if P["tscore"]:
+                for m in vis:
+                    ax, ay = pos[0] - m["pos"][0], pos[1] - m["pos"][1]
+                    back = abs(wrap(math.atan2(ay, ax) - m["aim"][0])) > math.pi / 2
+                    m["sc"] = m.get("hp", 1400) / (1.5 if back else 1.0) + m["d"] * 3
+                vis = sorted(vis, key=lambda m: m["sc"])
+            if P["engage"]:
+                for m in vis:
+                    ax, ay = pos[0] - m["pos"][0], pos[1] - m["pos"][1]
+                    m["danger"] = m["d"] < 70 or hurt_recent or abs(wrap(math.atan2(ay, ax) - m["aim"][0])) < 0.45
+                vis = [m for m in vis if m["danger"]]
+            if vis:
+                target = vis[0]; tkind = "mech"
+                for m in vis:
+                    if m["id"] == self.tgt_id and (P["sticky"] or (m["d"] < vis[0]["d"] + 25 if not P["tscore"] else m["sc"] < vis[0]["sc"] + 250)):
+                        target = m
+                self.tgt_id = target["id"]
+        elif not close and hp > 0.6 * mhp and t < P["farm_until"] and self.pick_goal(obs, wpn) is None:
             best = None
             for kind_, lst in (("npc", npcs), ("crate", obs["crates"])):
                 for m in lst:
@@ -396,7 +417,7 @@ class Bot:
                     elif lerr < 0.25 or ch > 0:
                         fire[1] = True
                     fire[0] = False if ch > 0 else fire[0]
-            if gun and not fire[0] and gun["ammo"] == 0:
+            if gun and not fire[0] and (gun["ammo"] == 0 or (P["upg"] and not los_ok and gun["ammo"] < gun["stats"]["mag"] * 0.6 and gun["reload"] == 0)):
                 act["reload"] = True
         else:
             if gun and gun["ammo"] < gun["stats"]["mag"] * 0.5 and gun["reload"] == 0:
@@ -466,7 +487,11 @@ class Bot:
                 home = self.pick_home(obs)
             # opportunistic loot when nothing hostile is near
             tgt = None
-            if hp > 0.6 * mhp and not close:
+            isdrop = False
+            if P["drop_r"] and hp > 0.5 * mhp and not close:
+                tgt = self.drop_goal(obs)
+                isdrop = tgt is not None
+            if tgt is None and hp > 0.6 * mhp and not close:
                 tgt = self.loot_goal(obs, me, wpn)
             g = tgt or home
             (wx, wy), d = self.follow(g, t)
@@ -474,6 +499,8 @@ class Bot:
                 wish = (0.0, 0.0)
             else:
                 wish = (wx, wy)
+            if P["sneak"] and mechs and not isdrop:
+                wish = (wish[0] * 0.42, wish[1] * 0.42)
             if tgt is not None and dist2(tgt, pos) < 3.5:
                 for p in obs["pickups"]:
                     if dist2(p["pos"], pos) < 3.8:
@@ -522,7 +549,8 @@ class Bot:
         pos = self.pos
         zc, zr, edge = self.zone_state(obs)
         best = None
-        for p in obs["pickups"]:
+        plist = [{"id": i, "kind": k_, "pos": pp_} for i, (k_, pp_) in self.pmem.items()] if P["pmem"] else obs["pickups"]
+        for p in plist:
             if p["kind"] not in PICK_W or p["kind"] in wpn:
                 continue
             d = dist2(p["pos"], pos)
@@ -532,6 +560,18 @@ class Bot:
             if best is None or sc > best[0]:
                 best = (sc, p["pos"])
         return best[1][:2] if best else None
+
+    def drop_goal(self, obs):
+        zc, zr, edge = self.zone_state(obs)
+        for d in obs["drops"]:
+            if d.get("holder") not in (None, obs["self"]["id"]):
+                continue
+            dd = dist2(d["pos"], self.pos)
+            if dd > P["drop_r"] or math.hypot(d["pos"][0] - zc[0], d["pos"][1] - zc[1]) > zr - 20:
+                continue
+            if dd / 11.0 + 8 >= d["lands_in"]:
+                return d["pos"][:2]
+        return None
 
     def loot_goal(self, obs, me, wpn):
         g = self.pick_goal(obs, wpn)
