@@ -16,7 +16,7 @@ ADJ = [(1, 0, 1.0), (-1, 0, 1.0), (0, 1, 1.0), (0, -1, 1.0), (1, 1, 1.414), (1, 
 UPG = ["nanites", "plating", "armor", "gun_damage", "servos", "reactor", "gun_mag", "gun_rate", "capacitor", "gyros", "lightning_efficiency",
        "lightning_chain", "laser_damage", "sensors", "jets"]
 PICK_W = {"lightning": 3, "laser": 2}
-P = {"retreat_hp": 0.5, "outnum": 2, "lo": 55, "hi": 110, "home_frac": 0.9, "scan": 0.28, "strafe": 1.0, "near_lo": -0.7, "flip_lo": 0.4, "flip_hi": 1.1, "retreat_jit": 0.0}
+P = {"retreat_hp": 0.5, "outnum": 2, "lo": 55, "hi": 110, "home_frac": 0.9, "scan": 0.28, "strafe": 1.0, "near_lo": -0.7, "flip_lo": 0.4, "flip_hi": 1.1, "retreat_jit": 0.0, "farm_until": 0, "farm_r": 100, "hyst": 0, "pick_r": 90, "cube_r": 45, "tol": 1.0, "stay": 0}
 if os.environ.get("MECH_P"):
     P.update(json.loads(os.environ["MECH_P"]))
 
@@ -30,7 +30,7 @@ def dist2(a, b):
 
 
 class Bot:
-    name = "survivor-v2"
+    name = "survivor-v2.1"
 
     def __init__(self, hello):
         cfg = hello["config"]
@@ -60,6 +60,8 @@ class Bot:
         self.laser_hold = 0
         self.dmg_bearing = None
         self.tgt_id = None
+        self.healing = False
+        self.stay_spot = None
 
     # ---------------------------------------------------------------- navigation
     def cfree(self, ci, cj):
@@ -268,10 +270,15 @@ class Bot:
         k = min(d, nr * P["home_frac"]) / d
         h = (nc[0] + dx * k, nc[1] + dy * k)
         # nudge to a walkable spot with some building cover nearby
+        self.home = self.cover_spot(h, nc, nr)
+        return self.home
+
+    def cover_spot(self, h, nc, nr):
+        """Walkable spot near h that building walls enclose the most (hard to see from afar)."""
         best = None
-        cands = [h] + [(h[0] + r * math.cos(a * TAU / 10), h[1] + r * math.sin(a * TAU / 10)) for r in (10, 20, 30) for a in range(10)]
+        cands = [h] + [(h[0] + r * math.cos(a * TAU / 10), h[1] + r * math.sin(a * TAU / 10)) for r in (10, 20, 30, 40) for a in range(10)]
         for c in cands:
-            if self.w.blocked_nav(*c) or math.hypot(c[0] - nc[0], c[1] - nc[1]) > nr * 0.8:
+            if self.w.blocked_nav(*c) or math.hypot(c[0] - nc[0], c[1] - nc[1]) > nr * 0.9:
                 continue
             enc = 0
             zc = self.w.ground(*c)
@@ -282,8 +289,7 @@ class Bot:
             sc = enc * 3 - dist2(c, h) * 0.1
             if best is None or sc > best[0]:
                 best = (sc, c)
-        self.home = best[1] if best else h
-        return self.home
+        return best[1] if best else h
 
     # ---------------------------------------------------------------- main
     def act(self, obs):
@@ -333,12 +339,22 @@ class Bot:
                 if m["id"] == self.tgt_id and m["d"] < vis[0]["d"] + 25:
                     target = m
             self.tgt_id = target["id"]
+        elif hp > 0.6 * mhp and t < P["farm_until"] and self.pick_goal(obs, wpn) is None:
+            best = None
+            for kind_, lst in (("npc", npcs), ("crate", obs["crates"])):
+                for m in lst:
+                    d_ = dist2(m["pos"], pos)
+                    if d_ < P["farm_r"] and math.hypot(m["pos"][0] - zc[0], m["pos"][1] - zc[1]) < zr - 30 and (best is None or d_ < best[0]):
+                        best = (d_, m, kind_)
+            if best:
+                target = best[1]; tkind = best[2]
         elif npcs and hp > 0.6 * mhp:
             n = min(npcs, key=lambda m: dist2(m["pos"], pos))
             if dist2(n["pos"], pos) < 70:
                 target = n; tkind = "npc"
         outnum = len(close) >= P["outnum"]
-        low = hp < P["retreat_hp"] * mhp
+        low = hp < P["retreat_hp"] * mhp or (P["hyst"] and self.healing and hp < 0.85 * mhp)
+        self.healing = low or (self.healing and hp < 0.85 * mhp)
 
         goal = None
         if edge < 12:
@@ -355,19 +371,19 @@ class Bot:
         # ---- aiming/firing at target
         if target is not None:
             tg = target
-            los_ok = tg.get("los", True) if tkind == "mech" else self.w.los((pos[0], pos[1], mz), (tg["pos"][0], tg["pos"][1], tg["pos"][2] + 4.5), 2.5)
+            los_ok = tg.get("los", True) if tkind == "mech" else self.w.los((pos[0], pos[1], mz), (tg["pos"][0], tg["pos"][1], tg["pos"][2] + 1.5), 2.5)
             gs = gun["stats"] if gun else {"speed": 252, "range": 230}
-            yaw, pit, d = self.solve_lead(me, tg, gs["speed"])
+            yaw, pit, d = self.solve_lead(me, tg, gs["speed"], 4.5 if tkind == "mech" else (1.75 if tkind == "npc" else 1.2))
             aim = [yaw, pit]
             err = abs(wrap(yaw - me["aim"][0]))
             perr = abs(pit - me["aim"][1])
-            tol = max(0.035, math.atan2(2.0, max(d, 10)))
+            tol = P["tol"] * max(0.035, math.atan2(2.0, max(d, 10)))
             self.dd = (los_ok, round(err, 3), round(perr, 3), round(tol, 3), gun['ammo'], gun['reload'])
             if gun and los_ok and d < gs["range"] - 10 and gun["ammo"] > 0 and gun["reload"] == 0 and err < tol and perr < 0.1:
                 fire[0] = True
-            if slot1 == "lightning" and d < 42 and err < 0.4 and me["energy"] > 8:
+            if tkind == "mech" and slot1 == "lightning" and d < 42 and err < 0.4 and me["energy"] > 8:
                 fire[1] = True
-            if slot1 == "laser" and los_ok and d < 250:
+            if tkind == "mech" and slot1 == "laser" and los_ok and d < 250:
                 lw = me["weapons"][1]
                 lyaw, lpit, _ = self.solve_lead(me, tg, 1e9)
                 ready = lw["cooldown"] <= 0.05 and lw.get("charge", 0) >= 0
@@ -429,7 +445,7 @@ class Bot:
                 self.strafe = self.rng.choice((-1, 1))
                 self.strafe_until = t + self.rng.uniform(P['flip_lo'], P['flip_hi'])
             rad = 0.0
-            lo_r, hi_r = (35, 55) if tkind == "npc" else (P["lo"], P["hi"])
+            lo_r, hi_r = (35, 55) if tkind != "mech" else (P["lo"], P["hi"])
             if slot1 == "lightning" and tkind == "mech":
                 lo_r, hi_r = 20, 38
             if dd < lo_r:
@@ -442,7 +458,12 @@ class Bot:
                 il = math.hypot(ix, iy) or 1
                 wish = (wish[0] + ix / il * 0.8, wish[1] + iy / il * 0.8)
         else:
-            home = self.pick_home(obs)
+            if P["stay"] and edge > 45 and t < P["stay"]:
+                if self.stay_spot is None:
+                    self.stay_spot = self.cover_spot((pos[0], pos[1]), zc, zr)
+                home = self.stay_spot
+            else:
+                home = self.pick_home(obs)
             # opportunistic loot when nothing hostile is near
             tgt = None
             if hp > 0.6 * mhp and not close:
@@ -488,31 +509,38 @@ class Bot:
 
         if aim is None:
             aim = [math.atan2(wish[1], wish[0]) if wl > 0.1 else me["aim"][0], 0.0]
-        self.dbg = (mode, None if target is None else round(target['d']), fire[0], getattr(self, 'dd', None))
+        self.dbg = (mode, None if target is None else round(dist2(target['pos'], pos)), fire[0], getattr(self, 'dd', None))
         act.update(move=[round(wish[0], 3), round(wish[1], 3)], boost=boost, aim=[aim[0], aim[1]], fire=fire)
         # background planning with whatever budget remains
         self.run_search(t, max(0.003, 0.012 - (time.perf_counter() - t0)))
         return act
 
-    def loot_goal(self, obs, me, wpn):
+    def pick_goal(self, obs, wpn):
+        """Position of the best weapon pickup worth walking to, or None."""
+        if (len(wpn) > 1 and wpn[1] is not None):
+            return None
         pos = self.pos
-        best = None
-        have1 = len(wpn) > 1 and wpn[1] is not None
         zc, zr, edge = self.zone_state(obs)
+        best = None
         for p in obs["pickups"]:
-            if have1 or p["kind"] not in PICK_W or p["kind"] in wpn:
+            if p["kind"] not in PICK_W or p["kind"] in wpn:
                 continue
             d = dist2(p["pos"], pos)
-            if d > 90 or math.hypot(p["pos"][0] - zc[0], p["pos"][1] - zc[1]) > zr - 25:
+            if d > P["pick_r"] or math.hypot(p["pos"][0] - zc[0], p["pos"][1] - zc[1]) > zr - 25:
                 continue
             sc = PICK_W[p["kind"]] * 40 - d
             if best is None or sc > best[0]:
                 best = (sc, p["pos"])
-        if best:
-            return best[1][:2]
+        return best[1][:2] if best else None
+
+    def loot_goal(self, obs, me, wpn):
+        g = self.pick_goal(obs, wpn)
+        if g:
+            return g
+        pos = self.pos
+        zc, zr, edge = self.zone_state(obs)
         for c in obs["cubes"]:
-            d = dist2(c["pos"], pos)
-            if d < 45 and math.hypot(c["pos"][0] - zc[0], c["pos"][1] - zc[1]) < zr - 25:
+            if dist2(c["pos"], pos) < P["cube_r"] and math.hypot(c["pos"][0] - zc[0], c["pos"][1] - zc[1]) < zr - 25:
                 return c["pos"][:2]
         return None
 
