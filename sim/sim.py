@@ -135,6 +135,10 @@ class Sim:
         if m.hp <= 0:
             m.alive = False; m.death_t = s.t; s.deaths.append((s.tick, m.id))
             s.sounds.append((s.t, "death", m.pos[0], m.pos[1], m.id))
+            if m.slot1 and m.id:
+                s.pickups.append({"id": s.cube_id, "kind": m.slot1, "pos": list(m.pos)}); s.cube_id += 1
+            if by == 0:
+                s.events[0].append({"type": "kill", "target": m.id})
 
     def sound(s, kind, m):
         s.sounds.append((s.t, kind, m.pos[0], m.pos[1], m.id))

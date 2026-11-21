@@ -64,6 +64,9 @@ class Bot:
         self.tgt_id = None
         self.healing = False
         self.pmem = {}
+        self.loot_until = 0.0
+        self.xgoal = None
+        self.xt = -99.0
         self.t_now = 0.0
         self.dodge_until = 0.0
         self.dodge_dir = (0.0, 0.0)
@@ -319,6 +322,8 @@ class Bot:
             if i not in seen_ids and dist2(pp_, pos) < 30:
                 del self.pmem[i]
         for e in obs["events"]:
+            if e["type"] == "kill":
+                self.loot_until = t + 10
             if e["type"] == "damaged" and e.get("by") is not None:
                 self.last_dmg_t = t
                 self.dmg_bearing = e["bearing"]
@@ -520,8 +525,18 @@ class Bot:
             if P["drop_r"] and hp > 0.5 * mhp and not close:
                 tgt = self.drop_goal(obs)
                 isdrop = tgt is not None
-            if tgt is None and hp > 0.6 * mhp and not close:
+            if tgt is None and hp > 0.6 * mhp and (not close or (P["killloot"] and t < self.loot_until)):
                 tgt = self.loot_goal(obs, me, wpn)
+            if tgt is None and P["explore"] and t < P["explore"] and not (len(wpn) > 1 and wpn[1] is not None) and hp > 0.6 * mhp and not close:
+                if self.xgoal is None or t - self.xt > 25 or dist2(self.xgoal, pos) < 20:
+                    nz = obs["zone"]
+                    for _ in range(12):
+                        a_ = self.rng.uniform(0, TAU); r_ = self.rng.uniform(120, 260)
+                        c_ = (pos[0] + r_ * math.cos(a_), pos[1] + r_ * math.sin(a_))
+                        if not self.w.blocked_nav(*c_) and math.hypot(c_[0] - nz["center"][0], c_[1] - nz["center"][1]) < nz["radius"] - 60:
+                            self.xgoal = c_; self.xt = t; break
+                if self.xgoal is not None:
+                    tgt = self.xgoal
             g = tgt or home
             (wx, wy), d = self.follow(g, t)
             if tgt is None and d < 6:
