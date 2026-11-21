@@ -19,7 +19,7 @@ UPG2 = ["gun_mag", "gun_damage", "plating", "armor", "gun_rate", "nanites", "lig
 UPG3 = ["laser_damage", "laser_charge", "gun_mag", "gun_damage", "plating", "armor", "gun_rate", "nanites", "laser_pierce", "lightning_efficiency", "lightning_chain", "servos", "reactor", "capacitor", "gyros", "sensors", "jets"]
 PICK_W2 = {"laser": 3, "lightning": 2}
 PICK_W = {"lightning": 3, "laser": 2}
-P = {"retreat_hp": 0.5, "outnum": 2, "lo": 55, "hi": 110, "home_frac": 0.9, "scan": 0.28, "strafe": 1.0, "near_lo": -0.7, "flip_lo": 0.4, "flip_hi": 1.1, "retreat_jit": 0.0, "farm_until": 200, "farm_r": 100, "hyst": 1, "pick_r": 90, "cube_r": 45, "tol": 1.0, "stay": 0, "fire_max": 999, "upg": 2, "tscore": 1, "pmem": 1, "drop_r": 300, "engage": 0, "sticky": 0, "sneak": 0, "lzdodge": 0, "laser1": 1, "scan0": 1, "pick_r0": 200, "lband": 0, "swap": 1, "explore": 150, "killloot": 1, "gunlaser": 0, "grab": 1, "xcells": 1, "kcube": 0, "avoid": 0, "farm_r0": 180}
+P = {"retreat_hp": 0.5, "outnum": 2, "lo": 55, "hi": 110, "home_frac": 0.9, "scan": 0.28, "strafe": 1.0, "near_lo": -0.7, "flip_lo": 0.4, "flip_hi": 1.1, "retreat_jit": 0.0, "farm_until": 200, "farm_r": 100, "hyst": 1, "pick_r": 90, "cube_r": 45, "tol": 1.0, "stay": 0, "fire_max": 999, "upg": 2, "tscore": 1, "pmem": 1, "drop_r": 300, "engage": 0, "sticky": 0, "sneak": 0, "lzdodge": 0, "laser1": 1, "scan0": 1, "pick_r0": 200, "lband": 0, "swap": 1, "explore": 150, "killloot": 1, "gunlaser": 0, "grab": 1, "xcells": 1, "kcube": 0, "avoid": 0, "farm_r0": 180, "eco": 1, "circ": 1, "band": 0}
 if os.environ.get("MECH_P"):
     P.update(json.loads(os.environ["MECH_P"]))
 
@@ -33,7 +33,7 @@ def dist2(a, b):
 
 
 class Bot:
-    name = "mech-xplore2"
+    name = "mech-eco"
 
     def __init__(self, hello):
         cfg = hello["config"]
@@ -65,6 +65,10 @@ class Bot:
         self.tgt_id = None
         self.healing = False
         self.pmem = {}
+        self.emem = {}
+        self.eignored = {}
+        self.echosen = None
+        self.estart = 0.0
         self.healing_ok = False
         self.visited = set()
         self.loot_until = 0.0
@@ -392,9 +396,10 @@ class Bot:
         self.healing = low or (self.healing and hp < 0.85 * mhp)
 
         goal = None
-        if edge < 12:
+        circ = P["circ"] and obs["zone"]["radius"] <= 150 and self.circle_forced(obs, me)
+        if edge < 12 or circ:
             mode = "zone"
-            goal = zc
+            goal = zc if (edge < 12 or not circ) else obs["zone"]["next_center"]
             boost = edge < 0 and me["energy"] > 10
         elif target is not None and tkind == "mech" and (low or outnum or (hurt_recent and target["d"] > 150) or (P["avoid"] and slot1 != "laser" and target["d"] > P["avoid"] and not self.healing_ok)):
             mode = "retreat"
@@ -526,10 +531,14 @@ class Bot:
             # opportunistic loot when nothing hostile is near
             tgt = None
             isdrop = False
-            if P["drop_r"] and hp > 0.5 * mhp and not close:
+            if P["eco"]:
+                ch = self.econ_choice(obs, me, wpn, close)
+                if ch:
+                    tgt = ch[1]["pos"][:2]; isdrop = ch[0] == "drop"
+            elif P["drop_r"] and hp > 0.5 * mhp and not close:
                 tgt = self.drop_goal(obs)
                 isdrop = tgt is not None
-            if tgt is None and hp > 0.6 * mhp and (not close or (P["killloot"] and t < self.loot_until)):
+            if tgt is None and not P["eco"] and hp > 0.6 * mhp and (not close or (P["killloot"] and t < self.loot_until)):
                 tgt = self.loot_goal(obs, me, wpn)
             if tgt is None and P["explore"] and t < P["explore"] and not (len(wpn) > 1 and wpn[1] is not None) and hp > 0.6 * mhp and not close:
                 if self.xgoal is None or t - self.xt > 25 or dist2(self.xgoal, pos) < 20:
@@ -576,6 +585,15 @@ class Bot:
                 wish = (wish[0] + (pos[0] - n["pos"][0]) / nd * 0.8, wish[1] + (pos[1] - n["pos"][1]) / nd * 0.8)
         wish = (wish[0] + dodge[0] * 1.5, wish[1] + dodge[1] * 1.5)
 
+        if P["eco"] and mode in ("fight", "retreat"):
+            ch = self.econ_choice(obs, me, wpn, close)
+            if ch and ch[0] != "crate" and (ch[2] < 24 or (ch[0] == "drop" and ch[2] < 70)) and hp > 0.25 * mhp:
+                (ex_, ey_), _d = self.follow(ch[1]["pos"][:2], t)
+                wish = (ex_, ey_)
+                if ch[0] == "weapon" and ch[2] < 3.8:
+                    act["take"] = ch[1]["id"]
+                    if len(wpn) > 1 and wpn[1] is not None:
+                        act["drop"] = 1
         if P["grab"] and mode != "zone" and slot1 != "laser" and hp > 0.3 * mhp:
             gg = self.pick_goal(obs, wpn)
             if gg is not None and dist2(gg, pos) < 140:
@@ -620,6 +638,83 @@ class Bot:
         # background planning with whatever budget remains
         self.run_search(t, max(0.003, 0.012 - (time.perf_counter() - t0)))
         return act
+
+    def econ_choice(self, obs, me, wpn, close):
+        """Value cubes, weapons, crates and supply drops; return (kind, item, dist) of the best, or None."""
+        now = obs["t"]; pos = me["pos"]; zone = obs["zone"]
+        for kind, lst in (("cube", obs["cubes"]), ("weapon", obs["pickups"]), ("crate", obs["crates"])):
+            for it in lst:
+                self.emem[it["id"]] = (kind, it, now)
+        for e in obs["events"]:
+            if e["type"] == "took" or (e["type"] == "take_failed" and e.get("reason") == "gone"):
+                self.emem.pop(e.get("id"), None)
+        nearest = min((m["d"] for m in close), default=999)
+        have1 = len(wpn) > 1 and wpn[1] is not None
+        cands = []
+        for iid, (kind, it, seen) in list(self.emem.items()):
+            d = dist2(pos, it["pos"])
+            if now - seen > 18 or (now > seen + 0.4 and d < 8):
+                del self.emem[iid]; continue
+            if kind == "weapon":
+                if it["kind"] not in PICK_W2 or it["kind"] in wpn:
+                    continue
+                if have1 and not (wpn[1] == "lightning" and it["kind"] == "laser"):
+                    continue
+                value = 150 if it["kind"] == "laser" else 138
+            elif kind == "cube":
+                value = 135 if me["cubes"] < 10 else 62
+            else:
+                if nearest < 90 or me["cubes"] >= 10 or d > 62 or (have1 and me["cubes"] >= 6):
+                    continue
+                value = 71 + (30 if not have1 else 0)
+            cands.append((value, kind, it, d, now - seen))
+        for dr in obs.get("drops", []):
+            d = dist2(pos, dr["pos"])
+            if dr["lands_in"] > d / 11.7 + 9 or dr.get("holder") not in (None, me["id"]):
+                continue
+            cands.append((188 + 150 * (1 - me["hp"] / me["max_hp"]) + 20 * dr.get("progress", 0), "drop", dr, d, 0))
+        best, choice = 0, None
+        for value, kind, it, d, age in cands:
+            if now < self.eignored.get(it["id"], -1):
+                continue
+            tp = it["pos"]
+            outside = max(0, math.hypot(tp[0] - zone["next_center"][0], tp[1] - zone["next_center"][1]) - zone["next_radius"])
+            if math.hypot(tp[0] - zone["center"][0], tp[1] - zone["center"][1]) > zone["radius"] - 5 or (
+                    outside > 0 and now + (d + outside) / 11.7 + 7 > zone["shrink_end"]):
+                continue
+            value -= d + outside * 0.55 + age * 1.5
+            if self.echosen == it["id"]:
+                value += 14
+            if nearest < 80 and kind != "drop" and d > 24:
+                value -= 65
+            if value > best:
+                best, choice = value, (kind, it, d)
+        cid = choice[1]["id"] if choice else None
+        if cid != self.echosen:
+            self.echosen, self.estart = cid, now
+        elif cid is not None and now - self.estart > 19 and choice[0] != "drop":
+            self.eignored[cid] = now + 30; self.echosen = None
+            return None
+        return choice
+
+    def circle_forced(self, obs, me):
+        """True when the shrinking circle must take priority over detours and duels (final phases)."""
+        z = obs["zone"]; r = z["radius"]; pos = me["pos"]
+        if not me["in_zone"]:
+            return True
+        if r <= 13:
+            return True
+        if r > 150 and z["dps"] < 60:
+            return False
+        end = z["next_center"]; er = z["next_radius"]; c = z["center"]
+        out = max(0, dist2(pos, end) - er)
+        horizon = 3.0 + 1.5 * out / 11.7
+        wait = max(0, z["shrink_start"] - obs["t"])
+        rem = max(0.01, z["shrink_end"] - max(obs["t"], z["shrink_start"]))
+        f = max(0, min(1, (horizon - wait) / rem))
+        fx = c[0] + f * (end[0] - c[0]); fy = c[1] + f * (end[1] - c[1])
+        fr = r + f * (er - r)
+        return dist2(pos, (fx, fy)) >= max(0, fr - min(10, max(2, fr * 0.35)))
 
     def pick_goal(self, obs, wpn):
         """Position of the best weapon pickup worth walking to, or None."""
