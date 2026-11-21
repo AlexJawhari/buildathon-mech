@@ -19,7 +19,7 @@ UPG2 = ["gun_mag", "gun_damage", "plating", "armor", "gun_rate", "nanites", "lig
 UPG3 = ["laser_damage", "laser_charge", "gun_mag", "gun_damage", "plating", "armor", "gun_rate", "nanites", "laser_pierce", "lightning_efficiency", "lightning_chain", "servos", "reactor", "capacitor", "gyros", "sensors", "jets"]
 PICK_W2 = {"laser": 3, "lightning": 2}
 PICK_W = {"lightning": 3, "laser": 2}
-P = {"retreat_hp": 0.5, "outnum": 2, "lo": 40, "hi": 80, "home_frac": 0.9, "scan": 0.28, "strafe": 1.0, "near_lo": -0.7, "flip_lo": 0.4, "flip_hi": 1.1, "retreat_jit": 0.0, "farm_until": 200, "farm_r": 100, "hyst": 1, "pick_r": 90, "cube_r": 45, "tol": 2.0, "stay": 0, "fire_max": 999, "upg": 2, "tscore": 1, "pmem": 1, "drop_r": 300, "engage": 0, "sticky": 0, "sneak": 0, "lzdodge": 0, "laser1": 1, "scan0": 1, "pick_r0": 200, "lband": 0, "swap": 1, "explore": 150, "killloot": 1, "gunlaser": 0, "grab": 1, "xcells": 1, "kcube": 0, "avoid": 0, "farm_r0": 180, "eco": 1, "circ": 1, "band": 0}
+P = {"retreat_hp": 0.5, "outnum": 2, "lo": 55, "hi": 110, "home_frac": 0.9, "scan": 0.28, "strafe": 1.0, "near_lo": -0.7, "flip_lo": 0.4, "flip_hi": 1.1, "retreat_jit": 0.0, "farm_until": 200, "farm_r": 100, "hyst": 1, "pick_r": 90, "cube_r": 45, "tol": 1.0, "stay": 0, "fire_max": 999, "upg": 2, "tscore": 1, "pmem": 1, "drop_r": 300, "engage": 0, "sticky": 0, "sneak": 0, "lzdodge": 2, "dtime": 0.4, "laser1": 1, "scan0": 1, "pick_r0": 200, "lband": 0, "swap": 1, "explore": 150, "killloot": 1, "gunlaser": 0, "grab": 1, "xcells": 1, "kcube": 0, "avoid": 0, "farm_r0": 180, "eco": 1, "circ": 1, "band": 0}
 if os.environ.get("MECH_P"):
     P.update(json.loads(os.environ["MECH_P"]))
 
@@ -33,7 +33,7 @@ def dist2(a, b):
 
 
 class Bot:
-    name = "mech-eco-close"
+    name = "mech-eco-dodge"
 
     def __init__(self, hello):
         cfg = hello["config"]
@@ -76,6 +76,7 @@ class Bot:
         self.xt = -99.0
         self.t_now = 0.0
         self.dodge_until = 0.0
+        self.chg = {}
         self.dodge_dir = (0.0, 0.0)
         self.stay_spot = None
 
@@ -409,7 +410,29 @@ class Bot:
             mode = "go"
 
         # ---- laser telegraph: step out of the beam line (or behind cover) while a laser carrier charges at us
-        if P["lzdodge"]:
+        if P["lzdodge"] == 2:
+            # house lasers lead our velocity: reverse our lateral velocity late in their charge
+            live = set()
+            for m in mechs:
+                if m.get("charging") and "laser" in (m.get("weapons") or []) and m["d"] < 290 and m.get("los", True):
+                    live.add(m["id"])
+                    t0 = self.chg.setdefault(m["id"], t)
+                    if t - t0 >= P["dtime"] and t < t0 + 0.95 and t >= self.dodge_until:
+                        bx, by = m["pos"][0] - pos[0], m["pos"][1] - pos[1]
+                        bl = math.hypot(bx, by) or 1
+                        px, py = -by / bl, bx / bl
+                        vx = vy = 0.0
+                        for ht, hx, hy in self.hist:
+                            if t - ht >= 0.25:
+                                vx, vy = (pos[0] - hx) / (t - ht), (pos[1] - hy) / (t - ht); break
+                        lat = vx * px + vy * py
+                        sg = -1 if lat > 0.5 else (1 if lat < -0.5 else self.rng.choice((-1, 1)))
+                        c = (pos[0] + px * sg * 7, pos[1] + py * sg * 7)
+                        if self.w.blocked_nav(*c):
+                            sg = -sg
+                        self.dodge_dir = (px * sg, py * sg); self.dodge_until = t + 0.4
+            self.chg = {k: v for k, v in self.chg.items() if k in live}
+        elif P["lzdodge"]:
             for m in mechs:
                 if m.get("charging") and "laser" in (m.get("weapons") or []) and m["d"] < 290:
                     ex, ey = pos[0] - m["pos"][0], pos[1] - m["pos"][1]

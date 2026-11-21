@@ -69,3 +69,10 @@ Kit example bot in the same sim: 1.02 (real baseline 1.15). Final v2 bot: about 
 - Upper bound test in the sim: starting with a laser scores 3.95 vs 2.65 without (+1.3); starting with lightning scores 2.32 (worse: it pulls us to 20-38 m while the squad stands off at 100+ m). So the second weapon must be a laser and acquiring it is the biggest lever; we only hold any second weapon in about 30-40% of sim matches and a laser in far fewer.
 - Tried and dropped: beam dodging by sidestepping during the charge (laser damage 940 -> 896, no score change), scan-only or lightning-first.
 - Shipped as variants J (a865161, econ base) and K (4cbe53d, focus base): laser-first loot, lightning swapped for laser, 360 degree scan at spawn, 200 m pickup radius for the first 60 s, normal fight band when holding lightning.
+
+## Round 4: real-score variants on top of M (e46eb8d, 4.04)
+
+- Real: M 4.04 (laser-first econ + early weapon exploration + loot after kills) is the best so far. N 83239a7 (cube greed, gun fires while laser charges) and P 5b1ea9f (run for known weapon under fire, explore to 120 s) were scored by the owner; Q e246169 = P + unvisited-cell exploration to 150 s.
+- R 8301b89 (economy, `eco`/`circ`): one utility function (`econ_choice`) values cubes, laser/lightning pickups, crates and supply drops minus distance, zone exposure and nearby-enemy risk; collects during fight/retreat when the item is within 24 m (drops within 70 m); circle takes priority over detours when radius <= 150 (`circle_forced`, walks to the next circle early).
+- S aa86cfb = R + duel band 40-80 m, tol 2.0 (looser fire gate). Sim only.
+- T (`mech-eco-dodge`) = R + `lzdodge: 2`: when a house laser carrier with line of sight has been `charging` for `dtime` 0.4 s of its ~0.75 s charge, reverse our lateral velocity (relative to the shooter) for 0.4 s, boosting. Reason: house lasers lead our velocity, so a late reversal at release should make the beam miss; the old `lzdodge: 1` (step out of the beam line at charge start) did nothing in the sim because the shooter re-aims. Sim smoke n=40: 5.42 with vs 4.53 without (noise SE ~0.4, not evidence). Real score decides.
