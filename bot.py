@@ -16,8 +16,9 @@ ADJ = [(1, 0, 1.0), (-1, 0, 1.0), (0, 1, 1.0), (0, -1, 1.0), (1, 1, 1.414), (1, 
 UPG = ["nanites", "plating", "armor", "gun_damage", "servos", "reactor", "gun_mag", "gun_rate", "capacitor", "gyros", "lightning_efficiency",
        "lightning_chain", "laser_damage", "sensors", "jets"]
 UPG2 = ["gun_mag", "gun_damage", "plating", "armor", "gun_rate", "nanites", "lightning_efficiency", "lightning_chain", "laser_damage", "servos", "reactor", "capacitor", "gyros", "sensors", "jets"]
+PICK_W2 = {"laser": 3, "lightning": 2}
 PICK_W = {"lightning": 3, "laser": 2}
-P = {"retreat_hp": 0.5, "outnum": 2, "lo": 55, "hi": 110, "home_frac": 0.9, "scan": 0.28, "strafe": 1.0, "near_lo": -0.7, "flip_lo": 0.4, "flip_hi": 1.1, "retreat_jit": 0.0, "farm_until": 0, "farm_r": 100, "hyst": 1, "pick_r": 90, "cube_r": 45, "tol": 1.0, "stay": 0, "fire_max": 999, "upg": 1, "tscore": 1, "pmem": 1, "drop_r": 300, "engage": 0, "sticky": 1, "sneak": 1}
+P = {"retreat_hp": 0.5, "outnum": 2, "lo": 55, "hi": 110, "home_frac": 0.9, "scan": 0.28, "strafe": 1.0, "near_lo": -0.7, "flip_lo": 0.4, "flip_hi": 1.1, "retreat_jit": 0.0, "farm_until": 200, "farm_r": 100, "hyst": 1, "pick_r": 90, "cube_r": 45, "tol": 1.0, "stay": 200, "fire_max": 999, "upg": 1, "tscore": 1, "pmem": 1, "drop_r": 300, "engage": 0, "sticky": 0, "sneak": 0, "lzdodge": 0, "laser1": 1, "scan0": 1, "pick_r0": 200, "lband": 0, "swap": 1}
 if os.environ.get("MECH_P"):
     P.update(json.loads(os.environ["MECH_P"]))
 
@@ -31,7 +32,7 @@ def dist2(a, b):
 
 
 class Bot:
-    name = "mech-focus"
+    name = "mech-laser"
 
     def __init__(self, hello):
         cfg = hello["config"]
@@ -63,6 +64,9 @@ class Bot:
         self.tgt_id = None
         self.healing = False
         self.pmem = {}
+        self.t_now = 0.0
+        self.dodge_until = 0.0
+        self.dodge_dir = (0.0, 0.0)
         self.stay_spot = None
 
     # ---------------------------------------------------------------- navigation
@@ -298,6 +302,7 @@ class Bot:
         t0 = time.perf_counter()
         me = obs["self"]
         t = obs["t"]
+        self.t_now = t
         self.pos = me["pos"]
         pos = self.pos
         act = {"tick": obs["tick"]}
@@ -389,6 +394,30 @@ class Bot:
         else:
             mode = "go"
 
+        # ---- laser telegraph: step out of the beam line (or behind cover) while a laser carrier charges at us
+        if P["lzdodge"]:
+            for m in mechs:
+                if m.get("charging") and "laser" in (m.get("weapons") or []) and m["d"] < 290:
+                    ex, ey = pos[0] - m["pos"][0], pos[1] - m["pos"][1]
+                    ux, uy = math.cos(m["aim"][0]), math.sin(m["aim"][0])
+                    along = ex * ux + ey * uy
+                    cross = ex * uy - ey * ux
+                    if along > 0 and abs(cross) < 6.5:
+                        side = 1 if cross >= 0 else -1
+                        best = None
+                        eye = (m["pos"][0], m["pos"][1], m["pos"][2] + 8)
+                        for sg in (side, -side):
+                            px, py = -uy * sg, ux * sg
+                            c = (pos[0] + px * 9, pos[1] + py * 9)
+                            if self.w.blocked_nav(*c) or self.w.blocked_nav(pos[0] + px * 4.5, pos[1] + py * 4.5):
+                                continue
+                            hidden = not self.w.los(eye, (c[0], c[1], self.w.ground(*c) + 4.5), 2.5)
+                            sc = (2 if hidden else 0) + (1 if sg == side else 0)
+                            if best is None or sc > best[0]:
+                                best = (sc, (px, py))
+                        if best:
+                            self.dodge_dir = best[1]; self.dodge_until = t + 0.35
+                        break
         # ---- aiming/firing at target
         if target is not None:
             tg = target
@@ -467,7 +496,7 @@ class Bot:
                 self.strafe_until = t + self.rng.uniform(P['flip_lo'], P['flip_hi'])
             rad = 0.0
             lo_r, hi_r = (35, 55) if tkind != "mech" else (P["lo"], P["hi"])
-            if slot1 == "lightning" and tkind == "mech":
+            if slot1 == "lightning" and tkind == "mech" and P["lband"]:
                 lo_r, hi_r = 20, 38
             if dd < lo_r:
                 rad = P["near_lo"]
@@ -505,6 +534,8 @@ class Bot:
                 for p in obs["pickups"]:
                     if dist2(p["pos"], pos) < 3.8:
                         act["take"] = p["id"]
+                        if len(wpn) > 1 and wpn[1] is not None:
+                            act["drop"] = 1
             # a quiet walk once close to home
         # npc drones: keep away unless we are hunting them
         for n in npcs:
@@ -513,6 +544,9 @@ class Bot:
                 wish = (wish[0] + (pos[0] - n["pos"][0]) / nd * 0.8, wish[1] + (pos[1] - n["pos"][1]) / nd * 0.8)
         wish = (wish[0] + dodge[0] * 1.5, wish[1] + dodge[1] * 1.5)
 
+        if t < self.dodge_until:
+            wish = self.dodge_dir
+            boost = me["energy"] > 15
         # stuck detection
         self.hist.append((t, pos[0], pos[1]))
         while self.hist and t - self.hist[0][0] > 2.0:
@@ -534,6 +568,8 @@ class Bot:
         if t >= self.stuck_until:
             wish = self.steer(*wish)
 
+        if P["scan0"] and t < 1.7 and not target:
+            aim = [wrap(me["aim"][0] + 0.8), 0.0]
         if aim is None:
             aim = [math.atan2(wish[1], wish[0]) if wl > 0.1 else me["aim"][0], 0.0]
         self.dbg = (mode, None if target is None else round(dist2(target['pos'], pos)), fire[0], getattr(self, 'dd', None))
@@ -544,19 +580,19 @@ class Bot:
 
     def pick_goal(self, obs, wpn):
         """Position of the best weapon pickup worth walking to, or None."""
-        if (len(wpn) > 1 and wpn[1] is not None):
+        if (len(wpn) > 1 and wpn[1] is not None) and not (P["swap"] and wpn[1] == "lightning"):
             return None
         pos = self.pos
         zc, zr, edge = self.zone_state(obs)
         best = None
         plist = [{"id": i, "kind": k_, "pos": pp_} for i, (k_, pp_) in self.pmem.items()] if P["pmem"] else obs["pickups"]
         for p in plist:
-            if p["kind"] not in PICK_W or p["kind"] in wpn:
+            if p["kind"] not in PICK_W or p["kind"] in wpn or (len(wpn) > 1 and wpn[1] == "lightning" and p["kind"] != "laser"):
                 continue
             d = dist2(p["pos"], pos)
-            if d > P["pick_r"] or math.hypot(p["pos"][0] - zc[0], p["pos"][1] - zc[1]) > zr - 25:
+            if d > (P["pick_r0"] if (P["pick_r0"] and self.t_now < 60) else P["pick_r"]) or math.hypot(p["pos"][0] - zc[0], p["pos"][1] - zc[1]) > zr - 25:
                 continue
-            sc = PICK_W[p["kind"]] * 40 - d
+            sc = (PICK_W2 if P["laser1"] else PICK_W)[p["kind"]] * 40 - d
             if best is None or sc > best[0]:
                 best = (sc, p["pos"])
         return best[1][:2] if best else None

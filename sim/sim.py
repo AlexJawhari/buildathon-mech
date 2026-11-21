@@ -82,10 +82,16 @@ class Sim:
         s.squad_known_until = -1.0; s.squad_last = None
         s.deaths = []  # (tick, id)
         h = dict(HELLO); h["slot"] = 0; h["seed"] = seed; h["map"] = {"dir": MAPDIR, "files": []}
+        if os.environ.get('SIM_START'):
+            s.mechs[0].slot1 = os.environ['SIM_START']; s.mechs[0].cd[1] = 1.0
         s.bot = bot_cls(h)
+        for _m in s.mechs[1:]:
+            if (_m.id - 1) // 4 >= 2 and os.environ.get('SIM_LASER', '1') == '1':
+                _m.slot1 = 'laser'
         s.house = [{"strafe": 1, "until": 0.0, "lv": LEVELS[i - 1]} for i in range(16)]
         s.dmg_taken = 0.0
         s.weakest_first = os.environ.get('SIM_WEAK', '1') == '1'; s.all_shoot = os.environ.get('SIM_ALL', '1') == '1'
+        s.dbw = {}
         s.shots = 0; s.sb = {}; s.hb = {}
 
     # ------------------------------------------------------------ zone
@@ -122,7 +128,7 @@ class Sim:
             amt *= s.mechs[by].dmgm
         m.hp -= amt; m.last_dmg = s.t
         if m.id == 0:
-            s.dmg_taken += amt
+            s.dmg_taken += amt; s.dbw[weapon] = s.dbw.get(weapon, 0) + amt
             s.events[0].append({"type": "damaged", "amount": amt, "weapon": weapon, "bearing": math.atan2(dy, dx), "by": by, "rear": rear})
         if by is not None:
             s.mechs[by].dealt += amt; s.mechs[by].last_dmg = s.t
@@ -420,8 +426,7 @@ class Sim:
             if me.slot1 == "laser":
                 ws[1]["charge"] = me.charge
         ev = s.events[0]; s.events[0] = []
-        near_p = [{"id": q["id"], "kind": q["kind"], "pos": q["pos"]} for q in s.pickups if math.hypot(q["pos"][0] - me.pos[0], q["pos"][1] - me.pos[1]) < 120
-                  and s.w.los((me.pos[0], me.pos[1], me.pos[2] + 8), (q["pos"][0], q["pos"][1], q["pos"][2] + 1), 3)]
+        near_p = [{"id": q["id"], "kind": q["kind"], "pos": q["pos"]} for q in s.pickups if s.vis_point(me, q["pos"], 1.0)]
         return {"type": "obs", "tick": s.tick, "t": s.t, "alive": sum(1 for m in s.mechs if m.alive),
                 "self": {"id": 0, "pos": list(me.pos), "vel": list(me.vel), "aim": list(me.aim), "hp": me.hp, "max_hp": me.max_hp, "energy": me.energy,
                          "max_energy": 100, "grounded": True, "cubes": me.cubes, "upgrades": list(s.picked), "in_zone": math.hypot(me.pos[0] - zc[0], me.pos[1] - zc[1]) < zr,
@@ -471,12 +476,17 @@ class Sim:
                 # lead
                 tvx, tvy = (me.vel[0], me.vel[1]) if sees else (0, 0)
                 tt = d / 252.0
+                if m.slot1 == "laser" and sees and d < 250 and (m.charge > 0 or m.cd[1] <= 0):
+                    tt = 0.12
                 px, py = aimp[0] + tvx * tt * lead, aimp[1] + tvy * tt * lead
                 yaw = math.atan2(py - m.pos[1], px - m.pos[0]) + s.rng.gauss(0, math.radians(sig))
                 pit = math.atan2(me.pos[2] + 4.5 - (m.pos[2] + 7), d) if sees else 0
                 m.cmd["aim"] = [yaw, pit]
                 aerr = abs(wrap(yaw - m.aim[0]))
-                m.cmd["fire"] = [bool(sees and d < 210 and aerr < 0.06 and s.w.los((m.pos[0], m.pos[1], m.pos[2] + 7), (me.pos[0], me.pos[1], me.pos[2] + 4.5), 3)), False]
+                lz = False
+                if m.slot1 == "laser" and sees and d < 250 and m.cd[1] <= 0 and s.w.los((m.pos[0], m.pos[1], m.pos[2] + 7), (me.pos[0], me.pos[1], me.pos[2] + 4.5), 3):
+                    lz = m.charge < 0.75
+                m.cmd["fire"] = [bool(sees and d < 210 and aerr < 0.06 and s.w.los((m.pos[0], m.pos[1], m.pos[2] + 7), (me.pos[0], me.pos[1], me.pos[2] + 4.5), 3)), lz]
             else:
                 # go to a spot in the next zone and sit
                 tx, ty = p["nc"][0] + math.cos(m.id) * p["nr"] * 0.5, p["nc"][1] + math.sin(m.id) * p["nr"] * 0.5
@@ -513,10 +523,13 @@ class Sim:
         c["fire"] = a.get("fire", [False, False]); c["reload"] = a.get("reload", False)
         if "pick" in a and s.offer:
             s.apply_offer(int(a["pick"]) if 0 <= int(a["pick"]) < 3 else 0)
-        if "take" in a and me.slot1 is None:
+        if "take" in a and (me.slot1 is None or a.get("drop") == 1):
             for q in s.pickups:
                 if q["id"] == a["take"] and math.hypot(q["pos"][0] - me.pos[0], q["pos"][1] - me.pos[1]) < 4.2:
-                    me.slot1 = q["kind"]; me.cd[1] = 1.0; s.pickups.remove(q); me.charge = 0.0; break
+                    old = me.slot1; me.slot1 = q["kind"]; me.cd[1] = 1.0; s.pickups.remove(q); me.charge = 0.0
+                    if old:
+                        s.pickups.append({"id": s.cube_id, "kind": old, "pos": list(me.pos)}); s.cube_id += 1
+                    break
 
     def run(s):
         s.bot_ms = []
@@ -545,7 +558,7 @@ class Sim:
             before = sum(1 for tk, i in s.deaths if tk < tick_me)
             place = 16 - before
         return dict(place=place, t=me.death_t if me.death_t is not None else s.t, kills=sum(1 for _ in []), dealt=me.dealt, taken=s.dmg_taken,
-                    ms_max=max(s.bot_ms) if s.bot_ms else 0, ms_mean=sum(s.bot_ms) / max(1, len(s.bot_ms)), cubes=me.cubes, me_acc=(s.hb.get(0, 0), s.sb.get(0, 0)), hs_acc=(sum(v for k, v in s.hb.items() if k), sum(v for k, v in s.sb.items() if k)), w1=me.slot1, squad_dead_at_end=15 - sum(1 for m in s.mechs[1:] if m.alive))
+                    ms_max=max(s.bot_ms) if s.bot_ms else 0, ms_mean=sum(s.bot_ms) / max(1, len(s.bot_ms)), dbw=s.dbw, cubes=me.cubes, me_acc=(s.hb.get(0, 0), s.sb.get(0, 0)), hs_acc=(sum(v for k, v in s.hb.items() if k), sum(v for k, v in s.sb.items() if k)), w1=me.slot1, squad_dead_at_end=15 - sum(1 for m in s.mechs[1:] if m.alive))
 
 
 def load_bot(path):
@@ -571,6 +584,10 @@ if __name__ == "__main__":
         res = p.map(one, [(1000 + i, intel, path) for i in range(n)])
     sc = [16 - r["place"] for r in res]
     print("our hit rate %.2f, house hit rate %.2f" % (sum(r["me_acc"][0] for r in res) / max(1, sum(r["me_acc"][1] for r in res)), sum(r["hs_acc"][0] for r in res) / max(1, sum(r["hs_acc"][1] for r in res))))
+    tot = {}
+    for r in res:
+        for k, v in r["dbw"].items(): tot[k] = tot.get(k, 0) + v / n
+    print("dmg taken per match by weapon", {k: round(v) for k, v in tot.items()})
     print("avg cubes %.1f, with weapon %.0f%%, avg death t %.0f" % (sum(r["cubes"] for r in res) / n, 100 * sum(1 for r in res if r["w1"]) / n, sum(r["t"] for r in res) / n))
     for r in res:
         print(f"seed {r['seed']} place {r['place']:2d} died {r['t']:6.1f}s dealt {r['dealt']:6.0f} taken {r['taken']:6.0f} squad_dead {r['squad_dead_at_end']} ms_mean {r['ms_mean']:.2f} max {r['ms_max']:.1f}")
