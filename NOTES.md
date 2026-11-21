@@ -44,3 +44,15 @@ Kit example bot in the same sim: 1.02 (real baseline 1.15). Final v2 bot: about 
 - Use the 4 real submissions per hour as the real A/B test: submit v2, read how the score moves, then change one thing (home placement, fight band) per submission.
 - Compare weapons: with a lightning or laser in slot 1 the bot switches its fight band (lightning 20-38 m). Never measured against the real squad.
 - Real unknowns: how the squad finds us (vision only, or told our position), what loot they carry, whether late in the match a corner-of-the-circle home gets squeezed by the zone.
+
+## Round 2 (after the first real score: v2 = 2.40 on 48 matches)
+
+- Found a real bug: v2 crashed (KeyError) whenever an NPC drone became the target, so the mech just coasted on its last action. v2.1 (023fe24) fixes it. In the sim the fix alone moved the mean from about 3.3 to about 4.2.
+- protocol.md says nothing about a squad, hunters or escalation; that came from the track brief, so whether escalation depends on kills or on time is unknown. A/B it on the real scorer.
+- Sim recalibrated: squad members all shoot on sight, hunters (weakest skill first) path toward us, 1 + dead/2 hunters until 300 s then all; NPC drones, crates, cubes and upgrade offers added. Baseline now 3.3-4.2 vs the real 2.40, so the sim is still optimistic. Our hit rate is 0.83 vs 0.45 for the house bots; both sides trade evenly in early duels mostly because several squad members see us at once.
+- Passive squad (only hunters shoot) scores 6.4 in the sim, far above the real 2.40, so real squad members do engage on sight.
+- Variants (all differ only by the `P` defaults in bot.py):
+  - 023fe24 v2.1: crash fix only. Sim 4.27 / 4.07 (vision / omni).
+  - db23d0f mech-econ: farm crates and NPC drones until 200 s, hide at a cover spot near spawn until the zone edge is 45 m away, heal to 85% HP before re-engaging. Sim about 4.5 / 4.3.
+  - fdeb3bf mech-stealth: hide until the zone forces a move (up to 400 s), do not fire at mechs beyond 80 m unless hit, heal to 85%. Sim 3.75 / 3.65 (the sim squad does not depend on our kills, so it cannot show the benefit of a kill throttle).
+- Sim A/B at n=150 (SE about 0.25): farm +0.1, stay +0.1, hysteresis +0.1, pick radius 150 +0.0: all within noise.
