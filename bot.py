@@ -19,7 +19,7 @@ UPG2 = ["gun_mag", "gun_damage", "plating", "armor", "gun_rate", "nanites", "lig
 UPG3 = ["laser_damage", "laser_charge", "gun_mag", "gun_damage", "plating", "armor", "gun_rate", "nanites", "laser_pierce", "lightning_efficiency", "lightning_chain", "servos", "reactor", "capacitor", "gyros", "sensors", "jets"]
 PICK_W2 = {"laser": 3, "lightning": 2, "mortar": 1}
 PICK_W = {"lightning": 3, "laser": 2, "mortar": 1}
-P = {"retreat_hp": 0.5, "outnum": 2, "lo": 55, "hi": 110, "home_frac": 0.9, "scan": 0.28, "strafe": 1.0, "near_lo": -0.7, "flip_lo": 0.4, "flip_hi": 1.1, "retreat_jit": 0.0, "farm_until": 200, "farm_r": 100, "hyst": 1, "pick_r": 90, "cube_r": 45, "tol": 1.0, "stay": 0, "fire_max": 999, "upg": 2, "tscore": 1, "pmem": 1, "drop_r": 300, "engage": 0, "sticky": 0, "sneak": 0, "lzdodge": 0, "dtime": 0.4, "dboost": 0, "mort": 0, "endg": 1, "lcap": 999, "laser1": 1, "scan0": 1, "pick_r0": 200, "lband": 0, "swap": 1, "explore": 120, "killloot": 1, "gunlaser": 0, "grab": 1, "xcells": 0, "kcube": 0, "avoid": 0, "farm_r0": 0, "eco": 1, "circ": 1, "band": 0}
+P = {"retreat_hp": 0.5, "outnum": 2, "lo": 55, "hi": 110, "home_frac": 0.9, "scan": 0.28, "strafe": 1.0, "near_lo": -0.7, "flip_lo": 0.4, "flip_hi": 1.1, "retreat_jit": 0.0, "farm_until": 200, "farm_r": 100, "hyst": 1, "pick_r": 90, "cube_r": 45, "tol": 1.0, "stay": 0, "fire_max": 999, "upg": 2, "tscore": 1, "pmem": 1, "drop_r": 300, "engage": 0, "sticky": 0, "sneak": 0, "lzdodge": 0, "dtime": 0.4, "dboost": 0, "heal_to": 0.85, "dcross": 6.0, "dwt": 1.5, "dmin_e": 12, "ring_frac": 0.8, "mort": 0, "endg": 1, "lcap": 999, "laser1": 1, "scan0": 1, "pick_r0": 200, "lband": 0, "swap": 1, "explore": 120, "killloot": 1, "gunlaser": 0, "grab": 1, "xcells": 0, "kcube": 0, "avoid": 0, "farm_r0": 0, "eco": 1, "circ": 1, "band": 0}
 if os.environ.get("MECH_P"):
     P.update(json.loads(os.environ["MECH_P"]))
 
@@ -286,7 +286,7 @@ class Bot:
             if along < 0 or along > (150 if shell else 80):
                 continue
             cross = (rx * vy - ry * vx) / sp
-            if abs(cross) < (10 if shell else 6):
+            if abs(cross) < (P["dcross"] * 1.6 if shell else P["dcross"]):
                 s = 1 if cross < 0 else -1  # step away to the side we are already on
                 ax += s * -vy / sp; ay += s * vx / sp
         return ax, ay
@@ -298,8 +298,9 @@ class Bot:
         d = math.hypot(self.pos[0] - zc[0], self.pos[1] - zc[1])
         return zc, zr, zr - d
 
-    def ring_point(self, obs, c, r, frac=0.8):
+    def ring_point(self, obs, c, r, frac=None):
         """Spot on a ring inside circle (c, r), on our side and away from known mechs: no centre pile-up."""
+        frac = frac or P["ring_frac"]
         ux, uy = self.pos[0] - c[0], self.pos[1] - c[1]
         ul = math.hypot(ux, uy) or 1
         ux, uy = ux / ul * 0.5, uy / ul * 0.5
@@ -433,8 +434,8 @@ class Bot:
             if dist2(n["pos"], pos) < 70:
                 target = n; tkind = "npc"
         outnum = len(close) >= P["outnum"]
-        low = hp < P["retreat_hp"] * mhp or (P["hyst"] and self.healing and hp < 0.85 * mhp)
-        self.healing = low or (self.healing and hp < 0.85 * mhp)
+        low = hp < P["retreat_hp"] * mhp or (P["hyst"] and self.healing and hp < P["heal_to"] * mhp)
+        self.healing = low or (self.healing and hp < P["heal_to"] * mhp)
 
         goal = None
         circ = P["circ"] and obs["zone"]["radius"] <= 150 and self.circle_forced(obs, me)
@@ -659,7 +660,7 @@ class Bot:
             if nd < 50 and target is not n and mode not in ("fight",):
                 wish = (wish[0] + (pos[0] - n["pos"][0]) / nd * 0.8, wish[1] + (pos[1] - n["pos"][1]) / nd * 0.8)
         dflag = P["dboost"] and (abs(dodge[0]) + abs(dodge[1])) > 0.1
-        wish = (wish[0] + dodge[0] * 1.5, wish[1] + dodge[1] * 1.5)
+        wish = (wish[0] + dodge[0] * P["dwt"], wish[1] + dodge[1] * P["dwt"])
 
         if P["eco"] and mode in ("fight", "retreat"):
             ch = self.econ_choice(obs, me, wpn, close)
@@ -684,7 +685,7 @@ class Bot:
         if t < self.dodge_until:
             wish = self.dodge_dir
             boost = me["energy"] > 15
-        elif dflag and me["energy"] > 12 and mode != "zone":
+        elif dflag and me["energy"] > P["dmin_e"] and mode != "zone":
             boost = True  # the boost is the bullet dodge
         # stuck detection
         self.hist.append((t, pos[0], pos[1]))

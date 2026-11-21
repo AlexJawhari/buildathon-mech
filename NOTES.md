@@ -82,3 +82,9 @@ Kit example bot in the same sim: 1.02 (real baseline 1.15). Final v2 bot: about 
 - W (`mech-eco-dodge-mortar`) = U + `dboost` (boost whenever an enemy gun bullet or mortar shell will pass within 6/10 m, not in zone mode; mortar shells tracked to 150 m), `hyst` 0 (no heal-to-85% stickiness), `lcap` 120 / `pick_r0` 120 (cap weapon seek radius), `mort` 1 (take a mortar into an empty slot, replace it with laser/lightning; lob it at tracked mechs with no line of sight at 45-215 m using a ballistic low-angle solve, checked on flat ground) and lzdodge off. Sim smoke n=40 (no mortar in the sim): 5.17 vs 5.30 for the old settings, noise.
 - X = W + `endg` 1: when the next circle radius < 30 the home is a ring point (0.8 r) on our side and away from the centroid of known mechs instead of the centre; in the last circle go to that ring point instead of the centre.
 - Real: U 4.54 (best, R 4.46). Isolation pair on U: Y = U + `dboost` only (mortar, heal, seek-cap and end-game off); Z = U + `endg` only (no dodge boost). Same code as W/X, parameters only.
+
+## Round 5: calibrated sim + sweeps
+
+- `sim/calib.py` runs each real-scored commit's bot.py (100 matches, vision intel, seeds 1000..) and compares with the real score; `sim/calib.csv` keeps the rows. Result with the sim as it stood (plus: a crashed bot now coasts on its last action instead of stopping): Spearman 0.85 over 14 commits, mean gap +0.25 (sim optimistic), gap sd 0.29 (about the sim noise, SE ~0.25 at n=100, plus real noise). Biggest misses: stealth fdeb3bf (sim 3.22 vs real 2.38: the sim squad does not punish hiding) and T d26c385 (sim 5.08 vs 4.31: the sim dodge and laser model are too kind). The sim has no mortar.
+- New bot params (defaults keep behaviour): `heal_to` 0.85, `dcross` 6, `dwt` 1.5, `dmin_e` 12, `ring_frac` 0.8.
+- `sim/sweep.py` random search over P (stage A random configs, B re-run of the top on fresh seeds, C mutation of the best), `sim/top.py` prints the best rows of the CSV.

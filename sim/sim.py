@@ -525,7 +525,9 @@ class Sim:
         try:
             a = s.bot.act(obs) or {}
         except Exception:
-            import traceback; traceback.print_exc(); a = {}
+            if os.environ.get('SIM_TRACE'):
+                import traceback; traceback.print_exc()
+            return  # a crashed bot coasts on its last action, as in the real game
         s.bot_ms.append((time.perf_counter() - t0) * 1000)
         c = me.cmd
         c["move"] = a.get("move", [0, 0]); c["boost"] = a.get("boost", False); c["aim"] = a.get("aim", c["aim"])
