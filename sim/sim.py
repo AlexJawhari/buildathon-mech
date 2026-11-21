@@ -489,7 +489,7 @@ class Sim:
                 aerr = abs(wrap(yaw - m.aim[0]))
                 lz = False
                 if m.slot1 == "laser" and sees and d < 250 and m.cd[1] <= 0 and s.w.los((m.pos[0], m.pos[1], m.pos[2] + 7), (me.pos[0], me.pos[1], me.pos[2] + 4.5), 3):
-                    lz = m.charge < 0.75
+                    lz = m.charge < 0.65
                 m.cmd["fire"] = [bool(sees and d < 210 and aerr < 0.06 and s.w.los((m.pos[0], m.pos[1], m.pos[2] + 7), (me.pos[0], me.pos[1], me.pos[2] + 4.5), 3)), lz]
             else:
                 # go to a spot in the next zone and sit
