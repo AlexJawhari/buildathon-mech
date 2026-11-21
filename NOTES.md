@@ -56,3 +56,16 @@ Kit example bot in the same sim: 1.02 (real baseline 1.15). Final v2 bot: about 
   - db23d0f mech-econ: farm crates and NPC drones until 200 s, hide at a cover spot near spawn until the zone edge is 45 m away, heal to 85% HP before re-engaging. Sim about 4.5 / 4.3.
   - fdeb3bf mech-stealth: hide until the zone forces a move (up to 400 s), do not fire at mechs beyond 80 m unless hit, heal to 85%. Sim 3.75 / 3.65 (the sim squad does not depend on our kills, so it cannot show the benefit of a kill throttle).
 - Sim A/B at n=150 (SE about 0.25): farm +0.1, stay +0.1, hysteresis +0.1, pick radius 150 +0.0: all within noise.
+
+## Round 3: diagnosis from the one real data source we have
+
+- Real scores so far: v2 2.40, v2.1 crash fix 2.94, econ 2.98, stealth 2.38, econ2 3.06, focus 3.10.
+- Practice replays are NOT fetchable: the track page lists only receipt ids, score and commit; no replay link, endpoint or game-server path exists in the page HTML, `play.joinbuilders.org` JS, or `/replays/` (404). `play.joinbuilders.org/replays/mechanics-v2-16.jsonl.gz` is the only public replay (no squad).
+- The only real observation data is `kit/check/stream.jsonl.gz` (300 real observations, 37 s, one match, a bot that mostly stood still). What it shows:
+  - A single house mech with gun + laser, standing off at 95-150 m, took the bot from 1400 HP to 10 in 37 s. 1260 of the ~1500 damage came from 4 laser beams of 315. The 5th beam was an early 0.2 s release that missed by 22 m.
+  - The beams hit with 0.0-1.1 m error even when our bot moved at 6.7-8.1 m/s, so house lasers lead our velocity; walking in a straight line does not dodge them. A charge lasts 0.7-0.8 s and is flagged `charging: true`.
+  - The house mech had its laser before t=5 s. The squad finds weapons fast.
+- Sim changes: squad hard/expert members now carry a laser with a 0.75 s charge and partial lead (sim 4.65 -> 2.6, close to the real 3.0). Sim laser damage is about half of all damage we take.
+- Upper bound test in the sim: starting with a laser scores 3.95 vs 2.65 without (+1.3); starting with lightning scores 2.32 (worse: it pulls us to 20-38 m while the squad stands off at 100+ m). So the second weapon must be a laser and acquiring it is the biggest lever; we only hold any second weapon in about 30-40% of sim matches and a laser in far fewer.
+- Tried and dropped: beam dodging by sidestepping during the charge (laser damage 940 -> 896, no score change), scan-only or lightning-first.
+- Shipped as variants J (a865161, econ base) and K (4cbe53d, focus base): laser-first loot, lightning swapped for laser, 360 degree scan at spawn, 200 m pickup radius for the first 60 s, normal fight band when holding lightning.
