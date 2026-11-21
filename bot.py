@@ -1,5 +1,7 @@
 """Survival-first mech bot: stay in the zone, hide in cover, kite and shoot back with lead, collect lightning/laser."""
 import heapq
+import json
+import os
 import math
 import random
 import time
@@ -14,6 +16,9 @@ ADJ = [(1, 0, 1.0), (-1, 0, 1.0), (0, 1, 1.0), (0, -1, 1.0), (1, 1, 1.414), (1, 
 UPG = ["nanites", "plating", "armor", "gun_damage", "servos", "reactor", "gun_mag", "gun_rate", "capacitor", "gyros", "lightning_efficiency",
        "lightning_chain", "laser_damage", "sensors", "jets"]
 PICK_W = {"lightning": 3, "laser": 2}
+P = {"retreat_hp": 0.5, "outnum": 2, "lo": 55, "hi": 110, "home_frac": 0.9, "scan": 0.28, "strafe": 1.0, "near_lo": -0.7, "flip_lo": 0.4, "flip_hi": 1.1, "retreat_jit": 0.0}
+if os.environ.get("MECH_P"):
+    P.update(json.loads(os.environ["MECH_P"]))
 
 
 def wrap(a):
@@ -25,7 +30,7 @@ def dist2(a, b):
 
 
 class Bot:
-    name = "survivor-v1"
+    name = "survivor-v2"
 
     def __init__(self, hello):
         cfg = hello["config"]
@@ -260,7 +265,7 @@ class Bot:
             return self.home
         dx, dy = self.pos[0] - nc[0], self.pos[1] - nc[1]
         d = math.hypot(dx, dy) or 1
-        k = min(d, nr * 0.55) / d
+        k = min(d, nr * P["home_frac"]) / d
         h = (nc[0] + dx * k, nc[1] + dy * k)
         # nudge to a walkable spot with some building cover nearby
         best = None
@@ -318,18 +323,22 @@ class Bot:
         # target selection
         target = None
         tkind = None
+        mz = pos[2] + 7
+        for m in close[:6]:
+            m["los"] = self.w.los((pos[0], pos[1], mz), (m["pos"][0], m["pos"][1], m["pos"][2] + 4.5), 2.5)
         if close:
-            target = close[0]; tkind = "mech"
-            for m in close:
-                if m["id"] == self.tgt_id and m["d"] < close[0]["d"] + 25:
+            vis = [m for m in close[:6] if m["los"]] or close
+            target = vis[0]; tkind = "mech"
+            for m in vis:
+                if m["id"] == self.tgt_id and m["d"] < vis[0]["d"] + 25:
                     target = m
             self.tgt_id = target["id"]
         elif npcs and hp > 0.6 * mhp:
             n = min(npcs, key=lambda m: dist2(m["pos"], pos))
             if dist2(n["pos"], pos) < 70:
                 target = n; tkind = "npc"
-        outnum = len(close) >= 2
-        low = hp < 0.5 * mhp
+        outnum = len(close) >= P["outnum"]
+        low = hp < P["retreat_hp"] * mhp
 
         goal = None
         if edge < 12:
@@ -346,13 +355,14 @@ class Bot:
         # ---- aiming/firing at target
         if target is not None:
             tg = target
-            los_ok = self.w.los((pos[0], pos[1], pos[2] + 7), (tg["pos"][0], tg["pos"][1], tg["pos"][2] + 4.5), 2.5)
+            los_ok = tg.get("los", True) if tkind == "mech" else self.w.los((pos[0], pos[1], mz), (tg["pos"][0], tg["pos"][1], tg["pos"][2] + 4.5), 2.5)
             gs = gun["stats"] if gun else {"speed": 252, "range": 230}
             yaw, pit, d = self.solve_lead(me, tg, gs["speed"])
             aim = [yaw, pit]
             err = abs(wrap(yaw - me["aim"][0]))
             perr = abs(pit - me["aim"][1])
             tol = max(0.035, math.atan2(2.0, max(d, 10)))
+            self.dd = (los_ok, round(err, 3), round(perr, 3), round(tol, 3), gun['ammo'], gun['reload'])
             if gun and los_ok and d < gs["range"] - 10 and gun["ammo"] > 0 and gun["reload"] == 0 and err < tol and perr < 0.1:
                 fire[0] = True
             if slot1 == "lightning" and d < 42 and err < 0.4 and me["energy"] > 8:
@@ -376,7 +386,7 @@ class Bot:
             if gun and gun["ammo"] < gun["stats"]["mag"] * 0.5 and gun["reload"] == 0:
                 act["reload"] = True
             if mode == "go" or mode == "idle":
-                self.scan = wrap(self.scan + 0.28)
+                self.scan = wrap(self.scan + P["scan"])
                 if self.dmg_bearing is not None and t - self.last_dmg_t < 4:
                     aim = [self.dmg_bearing, 0.0]
                 else:
@@ -389,6 +399,9 @@ class Bot:
             (wx, wy), _ = self.follow(zc, t)
             wish = (wx, wy)
         elif mode == "retreat":
+            if t > self.strafe_until:
+                self.strafe = self.rng.choice((-1, 1))
+                self.strafe_until = t + self.rng.uniform(P['flip_lo'], P['flip_hi'])
             if t - self.cover_t > 0.6 or self.cover is None:
                 b = self.pick_cover(close, zc, zr)
                 self.cover = b[1] if b else None
@@ -402,6 +415,10 @@ class Bot:
                 dx, dy = pos[0] - e[0], pos[1] - e[1]
                 dd = math.hypot(dx, dy) or 1
                 wish = (dx / dd * 0.3, dy / dd * 0.3)
+            if P["retreat_jit"] and target.get("los"):
+                ex, ey = target["pos"][0] - pos[0], target["pos"][1] - pos[1]
+                el = math.hypot(ex, ey) or 1
+                wish = (wish[0] - ey / el * self.strafe * P["retreat_jit"], wish[1] + ex / el * self.strafe * P["retreat_jit"])
             boost = low and target["d"] < 80 and me["energy"] > 40
         elif mode == "fight":
             e = target["pos"]
@@ -410,13 +427,13 @@ class Bot:
             ux, uy = dx / dd, dy / dd
             if t > self.strafe_until:
                 self.strafe = self.rng.choice((-1, 1))
-                self.strafe_until = t + self.rng.uniform(0.4, 1.1)
+                self.strafe_until = t + self.rng.uniform(P['flip_lo'], P['flip_hi'])
             rad = 0.0
-            lo_r, hi_r = (35, 55) if tkind == "npc" else (55, 110)
+            lo_r, hi_r = (35, 55) if tkind == "npc" else (P["lo"], P["hi"])
             if slot1 == "lightning" and tkind == "mech":
                 lo_r, hi_r = 20, 38
             if dd < lo_r:
-                rad = -0.7
+                rad = P["near_lo"]
             elif dd > hi_r:
                 rad = 0.6
             wish = (ux * rad - uy * self.strafe, uy * rad + ux * self.strafe)
@@ -428,7 +445,7 @@ class Bot:
             home = self.pick_home(obs)
             # opportunistic loot when nothing hostile is near
             tgt = None
-            if hp > 0.7 * mhp and not mechs:
+            if hp > 0.6 * mhp and not close:
                 tgt = self.loot_goal(obs, me, wpn)
             g = tgt or home
             (wx, wy), d = self.follow(g, t)
@@ -471,6 +488,7 @@ class Bot:
 
         if aim is None:
             aim = [math.atan2(wish[1], wish[0]) if wl > 0.1 else me["aim"][0], 0.0]
+        self.dbg = (mode, None if target is None else round(target['d']), fire[0], getattr(self, 'dd', None))
         act.update(move=[round(wish[0], 3), round(wish[1], 3)], boost=boost, aim=[aim[0], aim[1]], fire=fire)
         # background planning with whatever budget remains
         self.run_search(t, max(0.003, 0.012 - (time.perf_counter() - t0)))
