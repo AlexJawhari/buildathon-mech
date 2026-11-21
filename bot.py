@@ -16,7 +16,7 @@ ADJ = [(1, 0, 1.0), (-1, 0, 1.0), (0, 1, 1.0), (0, -1, 1.0), (1, 1, 1.414), (1, 
 UPG = ["nanites", "plating", "armor", "gun_damage", "servos", "reactor", "gun_mag", "gun_rate", "capacitor", "gyros", "lightning_efficiency",
        "lightning_chain", "laser_damage", "sensors", "jets"]
 PICK_W = {"lightning": 3, "laser": 2}
-P = {"retreat_hp": 0.5, "outnum": 2, "lo": 55, "hi": 110, "home_frac": 0.9, "scan": 0.28, "strafe": 1.0, "near_lo": -0.7, "flip_lo": 0.4, "flip_hi": 1.1, "retreat_jit": 0.0, "farm_until": 0, "farm_r": 100, "hyst": 0, "pick_r": 90, "cube_r": 45, "tol": 1.0, "stay": 0}
+P = {"retreat_hp": 0.5, "outnum": 2, "lo": 55, "hi": 110, "home_frac": 0.9, "scan": 0.28, "strafe": 1.0, "near_lo": -0.7, "flip_lo": 0.4, "flip_hi": 1.1, "retreat_jit": 0.0, "farm_until": 200, "farm_r": 100, "hyst": 1, "pick_r": 90, "cube_r": 45, "tol": 1.0, "stay": 200, "fire_max": 999}
 if os.environ.get("MECH_P"):
     P.update(json.loads(os.environ["MECH_P"]))
 
@@ -30,7 +30,7 @@ def dist2(a, b):
 
 
 class Bot:
-    name = "survivor-v2.1"
+    name = "mech-econ"
 
     def __init__(self, hello):
         cfg = hello["config"]
@@ -379,7 +379,7 @@ class Bot:
             perr = abs(pit - me["aim"][1])
             tol = P["tol"] * max(0.035, math.atan2(2.0, max(d, 10)))
             self.dd = (los_ok, round(err, 3), round(perr, 3), round(tol, 3), gun['ammo'], gun['reload'])
-            if gun and los_ok and d < gs["range"] - 10 and gun["ammo"] > 0 and gun["reload"] == 0 and err < tol and perr < 0.1:
+            if gun and los_ok and d < gs["range"] - 10 and (d < P["fire_max"] or hurt_recent or tkind != "mech") and gun["ammo"] > 0 and gun["reload"] == 0 and err < tol and perr < 0.1:
                 fire[0] = True
             if tkind == "mech" and slot1 == "lightning" and d < 42 and err < 0.4 and me["energy"] > 8:
                 fire[1] = True
