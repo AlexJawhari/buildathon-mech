@@ -17,9 +17,9 @@ UPG = ["nanites", "plating", "armor", "gun_damage", "servos", "reactor", "gun_ma
        "lightning_chain", "laser_damage", "sensors", "jets"]
 UPG2 = ["gun_mag", "gun_damage", "plating", "armor", "gun_rate", "nanites", "lightning_efficiency", "lightning_chain", "laser_damage", "servos", "reactor", "capacitor", "gyros", "sensors", "jets"]
 UPG3 = ["laser_damage", "laser_charge", "gun_mag", "gun_damage", "plating", "armor", "gun_rate", "nanites", "laser_pierce", "lightning_efficiency", "lightning_chain", "servos", "reactor", "capacitor", "gyros", "sensors", "jets"]
-PICK_W2 = {"laser": 3, "lightning": 2}
-PICK_W = {"lightning": 3, "laser": 2}
-P = {"retreat_hp": 0.5, "outnum": 2, "lo": 55, "hi": 110, "home_frac": 0.9, "scan": 0.28, "strafe": 1.0, "near_lo": -0.7, "flip_lo": 0.4, "flip_hi": 1.1, "retreat_jit": 0.0, "farm_until": 200, "farm_r": 100, "hyst": 1, "pick_r": 90, "cube_r": 45, "tol": 1.0, "stay": 0, "fire_max": 999, "upg": 2, "tscore": 1, "pmem": 1, "drop_r": 300, "engage": 0, "sticky": 0, "sneak": 0, "lzdodge": 2, "dtime": 0.4, "laser1": 1, "scan0": 1, "pick_r0": 200, "lband": 0, "swap": 1, "explore": 120, "killloot": 1, "gunlaser": 0, "grab": 1, "xcells": 0, "kcube": 0, "avoid": 0, "farm_r0": 0, "eco": 1, "circ": 1, "band": 0}
+PICK_W2 = {"laser": 3, "lightning": 2, "mortar": 1}
+PICK_W = {"lightning": 3, "laser": 2, "mortar": 1}
+P = {"retreat_hp": 0.5, "outnum": 2, "lo": 55, "hi": 110, "home_frac": 0.9, "scan": 0.28, "strafe": 1.0, "near_lo": -0.7, "flip_lo": 0.4, "flip_hi": 1.1, "retreat_jit": 0.0, "farm_until": 200, "farm_r": 100, "hyst": 0, "pick_r": 90, "cube_r": 45, "tol": 1.0, "stay": 0, "fire_max": 999, "upg": 2, "tscore": 1, "pmem": 1, "drop_r": 300, "engage": 0, "sticky": 0, "sneak": 0, "lzdodge": 0, "dtime": 0.4, "dboost": 1, "mort": 1, "endg": 0, "lcap": 120, "laser1": 1, "scan0": 1, "pick_r0": 120, "lband": 0, "swap": 1, "explore": 120, "killloot": 1, "gunlaser": 0, "grab": 1, "xcells": 0, "kcube": 0, "avoid": 0, "farm_r0": 0, "eco": 1, "circ": 1, "band": 0}
 if os.environ.get("MECH_P"):
     P.update(json.loads(os.environ["MECH_P"]))
 
@@ -33,7 +33,7 @@ def dist2(a, b):
 
 
 class Bot:
-    name = "mech-eco-p-dodge"
+    name = "mech-eco-dodge-mortar"
 
     def __init__(self, hello):
         cfg = hello["config"]
@@ -233,6 +233,31 @@ class Bot:
                 best = (sc, c, exp)
         return best
 
+    def exposed_to_known(self, close):
+        """Keep the mortar for quiet moments: skip when a visible mech is already close."""
+        return any(m["d"] < 45 for m in close)
+
+    def solve_mortar(self, me, tg, v=72.0, g=22.0):
+        """[yaw, pitch] of the low-angle lob that lands on the (led) target, or None when out of range."""
+        mp = (me["pos"][0], me["pos"][1], me["pos"][2] + me["stats"].get("height", 9) + 0.5)
+        tp = tg["pos"]; tv = tg.get("vel", [0, 0, 0])
+        ft = 0.0
+        for _ in range(4):
+            px, py = tp[0] + tv[0] * ft, tp[1] + tv[1] * ft
+            R = math.hypot(px - mp[0], py - mp[1])
+            dz = tp[2] + 1.0 - mp[2]
+            lo, hi = 0.0, math.pi / 4
+            if R * math.tan(hi) - g * R * R / (2 * v * v * math.cos(hi) ** 2) < dz:
+                return None
+            for _ in range(24):
+                th = (lo + hi) / 2
+                if R * math.tan(th) - g * R * R / (2 * v * v * math.cos(th) ** 2) < dz:
+                    lo = th
+                else:
+                    hi = th
+            ft = R / (v * math.cos(hi))
+        return math.atan2(py - mp[1], px - mp[0]), hi
+
     def solve_lead(self, me, tg, speed, gz_off=4.5):
         """Aim [yaw,pitch] to hit a moving target with a straight, instant-speed projectile."""
         mp = (me["pos"][0], me["pos"][1], me["pos"][2] + me["stats"].get("muzzle_height", 7))
@@ -257,10 +282,11 @@ class Bot:
                 continue
             rx, ry = me[0] - p["pos"][0], me[1] - p["pos"][1]
             along = (rx * vx + ry * vy) / sp
-            if along < 0 or along > 80:
+            shell = p.get("kind") == "mortar"
+            if along < 0 or along > (150 if shell else 80):
                 continue
             cross = (rx * vy - ry * vx) / sp
-            if abs(cross) < 6:
+            if abs(cross) < (10 if shell else 6):
                 s = 1 if cross < 0 else -1  # step away to the side we are already on
                 ax += s * -vy / sp; ay += s * vx / sp
         return ax, ay
@@ -272,6 +298,20 @@ class Bot:
         d = math.hypot(self.pos[0] - zc[0], self.pos[1] - zc[1])
         return zc, zr, zr - d
 
+    def ring_point(self, obs, c, r, frac=0.8):
+        """Spot on a ring inside circle (c, r), on our side and away from known mechs: no centre pile-up."""
+        ux, uy = self.pos[0] - c[0], self.pos[1] - c[1]
+        ul = math.hypot(ux, uy) or 1
+        ux, uy = ux / ul * 0.5, uy / ul * 0.5
+        ms = [m for m in obs["mechs"] if m["kind"] == "mech"]
+        if ms:
+            ex = sum(m["pos"][0] for m in ms) / len(ms) - c[0]
+            ey = sum(m["pos"][1] for m in ms) / len(ms) - c[1]
+            el = math.hypot(ex, ey) or 1
+            ux -= ex / el; uy -= ey / el
+        ul = math.hypot(ux, uy) or 1
+        return (c[0] + ux / ul * r * frac, c[1] + uy / ul * r * frac)
+
     def pick_home(self, obs):
         z = obs["zone"]
         key = (tuple(z["next_center"]), z["next_radius"])
@@ -280,7 +320,7 @@ class Bot:
         nc = z["next_center"]; nr = z["next_radius"]
         self.home_key = key
         if nr < 30:
-            self.home = (nc[0], nc[1])
+            self.home = self.ring_point(obs, nc, nr) if P["endg"] else (nc[0], nc[1])
             return self.home
         dx, dy = self.pos[0] - nc[0], self.pos[1] - nc[1]
         d = math.hypot(dx, dy) or 1
@@ -401,6 +441,12 @@ class Bot:
         if edge < 12 or circ:
             mode = "zone"
             goal = zc if (edge < 12 or not circ) else obs["zone"]["next_center"]
+            if P["endg"]:
+                if edge >= 12 or zr > 30:
+                    if circ and obs["zone"]["next_radius"] < 30:
+                        goal = self.ring_point(obs, obs["zone"]["next_center"], obs["zone"]["next_radius"])
+                else:
+                    goal = self.ring_point(obs, zc, zr)
             boost = edge < 0 and me["energy"] > 10
         elif target is not None and tkind == "mech" and (low or outnum or (hurt_recent and target["d"] > 150) or (P["avoid"] and slot1 != "laser" and target["d"] > P["avoid"] and not self.healing_ok)):
             mode = "retreat"
@@ -483,6 +529,12 @@ class Bot:
                     elif lerr < 0.25 or ch > 0:
                         fire[1] = True
                     fire[0] = False if (ch > 0 and not P["gunlaser"]) else fire[0]
+            if tkind == "mech" and slot1 == "mortar" and not los_ok and 45 < d < 215 and not self.exposed_to_known(close):
+                ma = self.solve_mortar(me, tg)
+                if ma:
+                    aim = list(ma)
+                    if abs(wrap(ma[0] - me["aim"][0])) < 0.05 and abs(ma[1] - me["aim"][1]) < 0.04:
+                        fire[1] = True
             if gun and not fire[0] and (gun["ammo"] == 0 or (P["upg"] and not los_ok and gun["ammo"] < gun["stats"]["mag"] * 0.6 and gun["reload"] == 0)):
                 act["reload"] = True
         else:
@@ -606,6 +658,7 @@ class Bot:
             nd = dist2(n["pos"], pos)
             if nd < 50 and target is not n and mode not in ("fight",):
                 wish = (wish[0] + (pos[0] - n["pos"][0]) / nd * 0.8, wish[1] + (pos[1] - n["pos"][1]) / nd * 0.8)
+        dflag = P["dboost"] and (abs(dodge[0]) + abs(dodge[1])) > 0.1
         wish = (wish[0] + dodge[0] * 1.5, wish[1] + dodge[1] * 1.5)
 
         if P["eco"] and mode in ("fight", "retreat"):
@@ -624,13 +677,15 @@ class Bot:
                 wish = (gx_, gy_)
                 if gd_ < 3.8:
                     for p in obs["pickups"]:
-                        if dist2(p["pos"], pos) < 3.8 and p["kind"] in PICK_W:
+                        if dist2(p["pos"], pos) < 3.8 and p["kind"] in PICK_W and p["kind"] not in wpn and (p["kind"] != "mortar" or (P["mort"] and not (len(wpn) > 1 and wpn[1]))) and not (len(wpn) > 1 and wpn[1] == "lightning" and p["kind"] != "laser"):
                             act["take"] = p["id"]
                             if len(wpn) > 1 and wpn[1] is not None:
                                 act["drop"] = 1
         if t < self.dodge_until:
             wish = self.dodge_dir
             boost = me["energy"] > 15
+        elif dflag and me["energy"] > 12 and mode != "zone":
+            boost = True  # the boost is the bullet dodge
         # stuck detection
         self.hist.append((t, pos[0], pos[1]))
         while self.hist and t - self.hist[0][0] > 2.0:
@@ -679,11 +734,11 @@ class Bot:
             if now - seen > 18 or (now > seen + 0.4 and d < 8):
                 del self.emem[iid]; continue
             if kind == "weapon":
-                if it["kind"] not in PICK_W2 or it["kind"] in wpn:
+                if it["kind"] not in PICK_W2 or it["kind"] in wpn or d > P["lcap"] or (it["kind"] == "mortar" and not P["mort"]):
                     continue
-                if have1 and not (wpn[1] == "lightning" and it["kind"] == "laser"):
+                if have1 and not ((wpn[1] == "lightning" and it["kind"] == "laser") or (wpn[1] == "mortar" and it["kind"] != "mortar")):
                     continue
-                value = 150 if it["kind"] == "laser" else 138
+                value = {"laser": 150, "lightning": 138}.get(it["kind"], 110)
             elif kind == "cube":
                 value = 135 if me["cubes"] < 10 else 62
             else:
@@ -741,14 +796,14 @@ class Bot:
 
     def pick_goal(self, obs, wpn):
         """Position of the best weapon pickup worth walking to, or None."""
-        if (len(wpn) > 1 and wpn[1] is not None) and not (P["swap"] and wpn[1] == "lightning"):
+        if (len(wpn) > 1 and wpn[1] is not None) and not ((P["swap"] and wpn[1] == "lightning") or wpn[1] == "mortar"):
             return None
         pos = self.pos
         zc, zr, edge = self.zone_state(obs)
         best = None
         plist = [{"id": i, "kind": k_, "pos": pp_} for i, (k_, pp_) in self.pmem.items()] if P["pmem"] else obs["pickups"]
         for p in plist:
-            if p["kind"] not in PICK_W or p["kind"] in wpn or (len(wpn) > 1 and wpn[1] == "lightning" and p["kind"] != "laser"):
+            if p["kind"] not in PICK_W or p["kind"] in wpn or (p["kind"] == "mortar" and not P["mort"]) or (len(wpn) > 1 and wpn[1] == "lightning" and p["kind"] != "laser"):
                 continue
             d = dist2(p["pos"], pos)
             if d > (P["pick_r0"] if (P["pick_r0"] and self.t_now < 60) else P["pick_r"]) or math.hypot(p["pos"][0] - zc[0], p["pos"][1] - zc[1]) > zr - 25:
