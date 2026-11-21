@@ -19,7 +19,7 @@ UPG2 = ["gun_mag", "gun_damage", "plating", "armor", "gun_rate", "nanites", "lig
 UPG3 = ["laser_damage", "laser_charge", "gun_mag", "gun_damage", "plating", "armor", "gun_rate", "nanites", "laser_pierce", "lightning_efficiency", "lightning_chain", "servos", "reactor", "capacitor", "gyros", "sensors", "jets"]
 PICK_W2 = {"laser": 3, "lightning": 2}
 PICK_W = {"lightning": 3, "laser": 2}
-P = {"retreat_hp": 0.5, "outnum": 2, "lo": 55, "hi": 110, "home_frac": 0.9, "scan": 0.28, "strafe": 1.0, "near_lo": -0.7, "flip_lo": 0.4, "flip_hi": 1.1, "retreat_jit": 0.0, "farm_until": 200, "farm_r": 100, "hyst": 1, "pick_r": 90, "cube_r": 45, "tol": 1.0, "stay": 0, "fire_max": 999, "upg": 2, "tscore": 1, "pmem": 1, "drop_r": 300, "engage": 0, "sticky": 0, "sneak": 0, "lzdodge": 0, "laser1": 1, "scan0": 1, "pick_r0": 200, "lband": 0, "swap": 1, "explore": 120, "killloot": 1, "gunlaser": 0, "grab": 1}
+P = {"retreat_hp": 0.5, "outnum": 2, "lo": 55, "hi": 110, "home_frac": 0.9, "scan": 0.28, "strafe": 1.0, "near_lo": -0.7, "flip_lo": 0.4, "flip_hi": 1.1, "retreat_jit": 0.0, "farm_until": 200, "farm_r": 100, "hyst": 1, "pick_r": 90, "cube_r": 45, "tol": 1.0, "stay": 0, "fire_max": 999, "upg": 2, "tscore": 1, "pmem": 1, "drop_r": 300, "engage": 0, "sticky": 0, "sneak": 0, "lzdodge": 0, "laser1": 1, "scan0": 1, "pick_r0": 200, "lband": 0, "swap": 1, "explore": 150, "killloot": 1, "gunlaser": 0, "grab": 1, "xcells": 1, "kcube": 0, "avoid": 0, "farm_r0": 180}
 if os.environ.get("MECH_P"):
     P.update(json.loads(os.environ["MECH_P"]))
 
@@ -33,7 +33,7 @@ def dist2(a, b):
 
 
 class Bot:
-    name = "mech-grab"
+    name = "mech-xplore2"
 
     def __init__(self, hello):
         cfg = hello["config"]
@@ -65,6 +65,8 @@ class Bot:
         self.tgt_id = None
         self.healing = False
         self.pmem = {}
+        self.healing_ok = False
+        self.visited = set()
         self.loot_until = 0.0
         self.xgoal = None
         self.xt = -99.0
@@ -316,6 +318,7 @@ class Bot:
             order = sorted(range(len(ids)), key=lambda i: up.index(ids[i]) if ids[i] in up else 99)
             act["pick"] = order[0]
         hp, mhp = me["hp"], me["max_hp"]
+        self.visited.add((int((pos[0] - MINX) // 60), int((pos[1] - MINY) // 60)))
         seen_ids = set()
         for p in obs["pickups"]:
             self.pmem[p["id"]] = (p["kind"], p["pos"]); seen_ids.add(p["id"])
@@ -376,7 +379,7 @@ class Bot:
             for kind_, lst in (("npc", npcs), ("crate", obs["crates"])):
                 for m in lst:
                     d_ = dist2(m["pos"], pos)
-                    if d_ < P["farm_r"] and math.hypot(m["pos"][0] - zc[0], m["pos"][1] - zc[1]) < zr - 30 and (best is None or d_ < best[0]):
+                    if d_ < (P["farm_r0"] if (P["farm_r0"] and slot1 is None) else P["farm_r"]) and math.hypot(m["pos"][0] - zc[0], m["pos"][1] - zc[1]) < zr - 30 and (best is None or d_ < best[0]):
                         best = (d_, m, kind_)
             if best:
                 target = best[1]; tkind = best[2]
@@ -393,7 +396,7 @@ class Bot:
             mode = "zone"
             goal = zc
             boost = edge < 0 and me["energy"] > 10
-        elif target is not None and tkind == "mech" and (low or outnum or (hurt_recent and target["d"] > 150)):
+        elif target is not None and tkind == "mech" and (low or outnum or (hurt_recent and target["d"] > 150) or (P["avoid"] and slot1 != "laser" and target["d"] > P["avoid"] and not self.healing_ok)):
             mode = "retreat"
         elif target is not None:
             mode = "fight"
@@ -531,11 +534,24 @@ class Bot:
             if tgt is None and P["explore"] and t < P["explore"] and not (len(wpn) > 1 and wpn[1] is not None) and hp > 0.6 * mhp and not close:
                 if self.xgoal is None or t - self.xt > 25 or dist2(self.xgoal, pos) < 20:
                     nz = obs["zone"]
-                    for _ in range(12):
-                        a_ = self.rng.uniform(0, TAU); r_ = self.rng.uniform(120, 260)
-                        c_ = (pos[0] + r_ * math.cos(a_), pos[1] + r_ * math.sin(a_))
-                        if not self.w.blocked_nav(*c_) and math.hypot(c_[0] - nz["center"][0], c_[1] - nz["center"][1]) < nz["radius"] - 60:
-                            self.xgoal = c_; self.xt = t; break
+                    cand = []
+                    if P["xcells"]:
+                        for ci_ in range(int((pos[0] - MINX) // 60) - 4, int((pos[0] - MINX) // 60) + 5):
+                            for cj_ in range(int((pos[1] - MINY) // 60) - 4, int((pos[1] - MINY) // 60) + 5):
+                                if (ci_, cj_) in self.visited:
+                                    continue
+                                c_ = (MINX + (ci_ + 0.5) * 60, MINY + (cj_ + 0.5) * 60)
+                                dd_ = dist2(c_, pos)
+                                if 60 < dd_ < 280 and not self.w.blocked_nav(*c_) and math.hypot(c_[0] - nz["center"][0], c_[1] - nz["center"][1]) < nz["radius"] - 60:
+                                    cand.append((dd_, c_))
+                        if cand:
+                            self.xgoal = min(cand)[1]; self.xt = t
+                    if not (P["xcells"] and cand):
+                        for _ in range(12):
+                            a_ = self.rng.uniform(0, TAU); r_ = self.rng.uniform(120, 260)
+                            c_ = (pos[0] + r_ * math.cos(a_), pos[1] + r_ * math.sin(a_))
+                            if not self.w.blocked_nav(*c_) and math.hypot(c_[0] - nz["center"][0], c_[1] - nz["center"][1]) < nz["radius"] - 60:
+                                self.xgoal = c_; self.xt = t; break
                 if self.xgoal is not None:
                     tgt = self.xgoal
             g = tgt or home
@@ -643,7 +659,7 @@ class Bot:
         pos = self.pos
         zc, zr, edge = self.zone_state(obs)
         for c in obs["cubes"]:
-            if dist2(c["pos"], pos) < P["cube_r"] and math.hypot(c["pos"][0] - zc[0], c["pos"][1] - zc[1]) < zr - 25:
+            if dist2(c["pos"], pos) < (max(P["cube_r"], 90) if (P["kcube"] and self.t_now < self.loot_until) else P["cube_r"]) and math.hypot(c["pos"][0] - zc[0], c["pos"][1] - zc[1]) < zr - 25:
                 return c["pos"][:2]
         return None
 

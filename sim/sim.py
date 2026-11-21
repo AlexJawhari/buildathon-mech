@@ -137,6 +137,9 @@ class Sim:
             s.sounds.append((s.t, "death", m.pos[0], m.pos[1], m.id))
             if m.slot1 and m.id:
                 s.pickups.append({"id": s.cube_id, "kind": m.slot1, "pos": list(m.pos)}); s.cube_id += 1
+            if m.id:
+                for _k in range(2):
+                    s.cubes.append({"id": s.cube_id, "pos": [m.pos[0] + _k * 2, m.pos[1], m.pos[2]]}); s.cube_id += 1
             if by == 0:
                 s.events[0].append({"type": "kill", "target": m.id})
 
@@ -255,6 +258,7 @@ class Sim:
     def laser_shot(s, m, dmg):
         dx, dy, dz = s.aim_vec(m); o = (m.pos[0], m.pos[1], m.pos[2] + 7)
         s.sound("laser", m)
+        if m.id == 0: s.lz_shot = getattr(s, 'lz_shot', 0) + 1
         for k in range(1, 190):
             d = k * 1.5; x, y, z = o[0] + dx * d, o[1] + dy * d, o[2] + dz * d
             if s.w.solid(x, y, z) or z < s.w.ground(x, y):
@@ -262,6 +266,7 @@ class Sim:
             for q in s.mechs:
                 if q is not m and q.alive and math.hypot(q.pos[0] - x, q.pos[1] - y) < 2.5 and q.pos[2] <= z <= q.pos[2] + 9:
                     s.damage(q, dmg, "laser", o, m.id)
+                    if m.id == 0: s.lz_hit = getattr(s, 'lz_hit', 0) + 1
                     return
 
     def step_bullets(s):
@@ -562,7 +567,7 @@ class Sim:
             before = sum(1 for tk, i in s.deaths if tk < tick_me)
             place = 16 - before
         return dict(place=place, t=me.death_t if me.death_t is not None else s.t, kills=sum(1 for _ in []), dealt=me.dealt, taken=s.dmg_taken,
-                    ms_max=max(s.bot_ms) if s.bot_ms else 0, ms_mean=sum(s.bot_ms) / max(1, len(s.bot_ms)), dbw=s.dbw, cubes=me.cubes, me_acc=(s.hb.get(0, 0), s.sb.get(0, 0)), hs_acc=(sum(v for k, v in s.hb.items() if k), sum(v for k, v in s.sb.items() if k)), w1=me.slot1, squad_dead_at_end=15 - sum(1 for m in s.mechs[1:] if m.alive))
+                    ms_max=max(s.bot_ms) if s.bot_ms else 0, ms_mean=sum(s.bot_ms) / max(1, len(s.bot_ms)), dbw=s.dbw, lz=(getattr(s,'lz_hit',0), getattr(s,'lz_shot',0)), cubes=me.cubes, me_acc=(s.hb.get(0, 0), s.sb.get(0, 0)), hs_acc=(sum(v for k, v in s.hb.items() if k), sum(v for k, v in s.sb.items() if k)), w1=me.slot1, squad_dead_at_end=15 - sum(1 for m in s.mechs[1:] if m.alive))
 
 
 def load_bot(path):
@@ -592,6 +597,7 @@ if __name__ == "__main__":
     for r in res:
         for k, v in r["dbw"].items(): tot[k] = tot.get(k, 0) + v / n
     print("dmg taken per match by weapon", {k: round(v) for k, v in tot.items()})
+    print("our laser hits/shots", sum(r["lz"][0] for r in res), sum(r["lz"][1] for r in res))
     print("avg cubes %.1f, with weapon %.0f%%, avg death t %.0f" % (sum(r["cubes"] for r in res) / n, 100 * sum(1 for r in res if r["w1"]) / n, sum(r["t"] for r in res) / n))
     for r in res:
         print(f"seed {r['seed']} place {r['place']:2d} died {r['t']:6.1f}s dealt {r['dealt']:6.0f} taken {r['taken']:6.0f} squad_dead {r['squad_dead_at_end']} ms_mean {r['ms_mean']:.2f} max {r['ms_max']:.1f}")
