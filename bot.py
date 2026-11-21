@@ -16,9 +16,10 @@ ADJ = [(1, 0, 1.0), (-1, 0, 1.0), (0, 1, 1.0), (0, -1, 1.0), (1, 1, 1.414), (1, 
 UPG = ["nanites", "plating", "armor", "gun_damage", "servos", "reactor", "gun_mag", "gun_rate", "capacitor", "gyros", "lightning_efficiency",
        "lightning_chain", "laser_damage", "sensors", "jets"]
 UPG2 = ["gun_mag", "gun_damage", "plating", "armor", "gun_rate", "nanites", "lightning_efficiency", "lightning_chain", "laser_damage", "servos", "reactor", "capacitor", "gyros", "sensors", "jets"]
+UPG3 = ["laser_damage", "laser_charge", "gun_mag", "gun_damage", "plating", "armor", "gun_rate", "nanites", "laser_pierce", "lightning_efficiency", "lightning_chain", "servos", "reactor", "capacitor", "gyros", "sensors", "jets"]
 PICK_W2 = {"laser": 3, "lightning": 2}
 PICK_W = {"lightning": 3, "laser": 2}
-P = {"retreat_hp": 0.5, "outnum": 2, "lo": 55, "hi": 110, "home_frac": 0.9, "scan": 0.28, "strafe": 1.0, "near_lo": -0.7, "flip_lo": 0.4, "flip_hi": 1.1, "retreat_jit": 0.0, "farm_until": 260, "farm_r": 140, "hyst": 1, "pick_r": 90, "cube_r": 140, "tol": 1.0, "stay": 0, "fire_max": 999, "upg": 1, "tscore": 1, "pmem": 1, "drop_r": 300, "engage": 0, "sticky": 0, "sneak": 0, "lzdodge": 0, "laser1": 1, "scan0": 1, "pick_r0": 200, "lband": 0, "swap": 1, "explore": 90, "killloot": 1, "gunlaser": 1}
+P = {"retreat_hp": 0.5, "outnum": 2, "lo": 55, "hi": 110, "home_frac": 0.9, "scan": 0.28, "strafe": 1.0, "near_lo": -0.7, "flip_lo": 0.4, "flip_hi": 1.1, "retreat_jit": 0.0, "farm_until": 200, "farm_r": 100, "hyst": 1, "pick_r": 90, "cube_r": 45, "tol": 1.0, "stay": 0, "fire_max": 999, "upg": 2, "tscore": 1, "pmem": 1, "drop_r": 300, "engage": 0, "sticky": 0, "sneak": 0, "lzdodge": 0, "laser1": 1, "scan0": 1, "pick_r0": 200, "lband": 0, "swap": 1, "explore": 120, "killloot": 1, "gunlaser": 0, "grab": 1}
 if os.environ.get("MECH_P"):
     P.update(json.loads(os.environ["MECH_P"]))
 
@@ -32,7 +33,7 @@ def dist2(a, b):
 
 
 class Bot:
-    name = "mech-greed"
+    name = "mech-grab"
 
     def __init__(self, hello):
         cfg = hello["config"]
@@ -311,7 +312,7 @@ class Bot:
         act = {"tick": obs["tick"]}
         if obs["offer"]:
             ids = [c["id"] for c in obs["offer"]["choices"]]
-            up = UPG2 if P["upg"] else UPG
+            up = (UPG3 if (P["upg"] == 2 and "laser" in [(w or {}).get("kind") for w in me["weapons"]]) else UPG2) if P["upg"] else UPG
             order = sorted(range(len(ids)), key=lambda i: up.index(ids[i]) if ids[i] in up else 99)
             act["pick"] = order[0]
         hp, mhp = me["hp"], me["max_hp"]
@@ -559,6 +560,17 @@ class Bot:
                 wish = (wish[0] + (pos[0] - n["pos"][0]) / nd * 0.8, wish[1] + (pos[1] - n["pos"][1]) / nd * 0.8)
         wish = (wish[0] + dodge[0] * 1.5, wish[1] + dodge[1] * 1.5)
 
+        if P["grab"] and mode != "zone" and slot1 != "laser" and hp > 0.3 * mhp:
+            gg = self.pick_goal(obs, wpn)
+            if gg is not None and dist2(gg, pos) < 140:
+                (gx_, gy_), gd_ = self.follow(gg, t)
+                wish = (gx_, gy_)
+                if gd_ < 3.8:
+                    for p in obs["pickups"]:
+                        if dist2(p["pos"], pos) < 3.8 and p["kind"] in PICK_W:
+                            act["take"] = p["id"]
+                            if len(wpn) > 1 and wpn[1] is not None:
+                                act["drop"] = 1
         if t < self.dodge_until:
             wish = self.dodge_dir
             boost = me["energy"] > 15
