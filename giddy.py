@@ -2,6 +2,7 @@
 (EndGhost 140). One mode per tick: escape / unstuck / dodge-shell / zone / retreat+cover / hide / fight / zone / loot / home.
 Parameters that are zero in both parameter sets (explore, econ, odds, shy, ...) and the never-picked mortar are left out.
 Per-tick work is bounded by a soft deadline (cover search, home scoring and path search degrade or spread over ticks)."""
+import json
 import math
 import os
 import random
@@ -10,6 +11,12 @@ from types import SimpleNamespace
 
 from world import World, NNX, NNY
 
+# survival-layer switches (A/B with MECH_FLAGS='{"uf":0}'): uf = cover and keep moving under fire in every mode, sg = skip contested
+# weapons and give up slow ones, bub = stay out of other mechs' fights, home2 = off-centre hiding spots that respect the shrinking
+# circle, end = heal before looting and pick on clearly weaker mechs in the end game, drop = supply drops when young, near and safe
+FLAGS = dict(uf=1, sg=1, bub=1, home2=1, end=1, drop=0)
+FLAGS.update(json.loads(os.environ.get("MECH_FLAGS", "{}")))
+F = FLAGS
 LAT = 0.075
 hyp = math.hypot
 PI = math.pi
@@ -104,6 +111,7 @@ class Bot:
         self.stick_id, self.stick_at, self.lose_at = 0, 0.0, 0.0
         self.t0 = 0.0
         self.mode = ""
+        self.fights = []
         self.csearch, self.cs_best, self.cs_touch, self.cs_deadline = None, (-1, math.inf), 0.0, 0.0
         self.trunc = {"cover": 0, "cover_n": 0, "fight": 0, "fight_n": 0, "astar_ticks": 0, "home_ticks": 0, "slow": 0, "n": 0}
 
@@ -213,6 +221,16 @@ class Bot:
         if self.prac_on and not self.end_ghost and self.base.EndGhost > 0 and o["zone"]["next_radius"] <= self.base.EndGhost:
             self.end_ghost = True
             self.P = SimpleNamespace(**{**vars(self.base), "Practice": False})
+        self.fights = []
+        if F["bub"]:
+            ts = [t for t in self.tracks.values() if now - t.seen < 3 and t.kind == "mech"]
+            for i, a in enumerate(ts):
+                for b in ts[i + 1:]:
+                    d = hyp(a.pos[0] - b.pos[0], a.pos[1] - b.pos[1])
+                    ab = math.atan2(b.pos[1] - a.pos[1], b.pos[0] - a.pos[0])
+                    aims = d < 150 and (abs(ang_diff(a.aim[0], ab)) < 0.15 or abs(ang_diff(b.aim[0], ab + PI)) < 0.15)
+                    if d < 70 or aims:
+                        self.fights.append(((a.pos[0] + b.pos[0]) / 2, (a.pos[1] + b.pos[1]) / 2, d / 2 + 100))
         z = o["zone"]
         if self.hold_start != z["shrink_start"]:
             self.hold_start = z["shrink_start"]
@@ -653,6 +671,16 @@ class Bot:
         cur = rank(ws[1]["kind"]) if len(ws) > 1 and ws[1] else 0
         return rank(kind) > cur
 
+    def contested(self, pos, x, y):
+        """A mech seen in the last 10 s stands near this pickup or is closer to it than we are."""
+        mine = hyp(pos[0] - x, pos[1] - y)
+        for t in self.tracks.values():
+            if self.now - t.seen < 10:
+                d = hyp(t.pos[0] - pos[0], t.pos[1] - pos[1])
+                if d < 45 or d < mine * 0.8 + 10:
+                    return True
+        return False
+
     def cube_cap(self):
         return self.cfg["cubes"]["stat_cap"]
 
@@ -673,6 +701,9 @@ class Bot:
             d = hyp(pos[0] - x, pos[1] - y)
             if d > 260 or hyp(pos[0] - cur[0], pos[1] - cur[1]) > cur[2] - 6:
                 return
+            for fx, fy, fr in self.fights:
+                if hyp(pos[0] - fx, pos[1] - fy) < fr:
+                    return
             if now + d * 1.4 / walk + 5 > self.zone_deadline(z, pos[0], pos[1], 6):
                 return
             if pos[2] - W.ground(pos[0], pos[1]) > 3.2:
@@ -692,6 +723,8 @@ class Bot:
             if seek:
                 rad = P.LaserSeek
             if self.want_pickup(me, p.kind) and hyp(p.pos[0] - x, p.pos[1] - y) < rad:
+                if F["sg"] and self.contested(p.pos, x, y):
+                    continue
                 v = 130.0 if len(me["weapons"]) > 1 and me["weapons"][1] is None else 60.0
                 if seek:
                     v = max(v, 150)
@@ -709,12 +742,18 @@ class Bot:
                 for n in self.npcs.values():
                     if now - n.seen < 12 and hyp(n.pos[0] - x, n.pos[1] - y) < P.LootRadius:
                         consider("npc", n.id, n.pos, 85)
+        if F["drop"] and not danger and hp_frac > 0.5:
+            for d in o["drops"]:
+                dist = hyp(d["pos"][0] - x, d["pos"][1] - y)
+                if dist < 140 and dist / walk < d["lands_in"] + 12 and d["holder"] in (None, me["id"]) and \
+                        not any(now - t.seen < 6 and hyp(t.pos[0] - d["pos"][0], t.pos[1] - d["pos"][1]) < 90 for t in self.tracks.values()):
+                    consider("drop", d["id"], d["pos"], 260)
         if best[0] is None:
             self.loot_id = -1
             return None
         if best[0][1] != self.loot_id:
             self.loot_id, self.loot_since = best[0][1], now
-        elif now - self.loot_since > 30:
+        elif now - self.loot_since > (14 if F["sg"] and best[0][0] == "pickup" else 30):
             self.bad[best[0][1]] = now + 60
             self.loot_id = -1
             return None
@@ -734,7 +773,12 @@ class Bot:
         if e is None:
             e = self.expo[key] = self.W.exposure(px, py)
         edge = hyp(px - z["next_center"][0], py - z["next_center"][1]) / max(30, z["next_radius"])
-        return self.P.HomeExpo * e + 0.25 * hyp(px - o["self"]["pos"][0], py - o["self"]["pos"][1]) + 40 * crowd + 10 * edge
+        cost = self.P.HomeExpo * e + 0.25 * hyp(px - o["self"]["pos"][0], py - o["self"]["pos"][1]) + 40 * crowd + 10 * edge
+        if F["home2"]:
+            cost += 30 * max(0.0, 0.4 - edge) / 0.4 + 0.4 * self.zone_penalty(z, px, py)
+        for fx, fy, fr in self.fights:
+            cost += 60 * max(0.0, 1 - hyp(px - fx, py - fy) / fr)
+        return cost
 
     def home(self, o):
         z = o["zone"]
@@ -823,6 +867,8 @@ class Bot:
             if P.Ghost:
                 t.engage = (t.dist < P.EngageDist or now - t.hit_me < 4 or (aimed and t.charging and t.dist < 120)
                             or (t.hp < 350 and t.dist < 120) or o["alive"] <= 2)
+                if F["end"] and self.end_ghost and hp_frac > 0.6 and t.hp < 0.5 * me["hp"] and t.dist < 110:
+                    t.engage = True
             else:
                 t.engage = (t.dist < P.EngageDist or now - t.hit_me < 6 or late or (t.closing > 3 and t.dist < 180)
                             or (t.hp < 0.4 * t.max_hp and t.dist < 160) or (aimed and t.dist < 190))
@@ -920,7 +966,7 @@ class Bot:
                     side = -1.0 if math.fmod(now, 3) > 1.5 else 1.0
                     mx, my = -math.sin(self.npc_bearing) * side, math.cos(self.npc_bearing) * side
                 mode = "flee"
-        elif target is None and now - self.last_hurt < 2.5 and not late and P.Ghost and \
+        elif target is None and now - self.last_hurt < 2.5 and not late and (P.Ghost or F["uf"]) and \
                 (cm := self.hide_from_bearing(o, seen)) is not None:
             mx, my = cm
             boost = energy > 30 and (mx != 0 or my != 0)
@@ -962,7 +1008,7 @@ class Bot:
             mx, my = self.travel(me, zgx, zgy)
             mode = "zone"
         else:
-            lc = self.choose_loot(o, hp_frac, danger)
+            lc = None if F["end"] and self.end_ghost and hp_frac < 0.92 else self.choose_loot(o, hp_frac, danger)
             if lc is not None:
                 kind, lid, lpos = lc
                 mode = "loot:" + kind
@@ -984,6 +1030,8 @@ class Bot:
                         mx, my = self.travel(me, lpos[0], lpos[1])
                 else:
                     mx, my = self.travel(me, lpos[0], lpos[1])
+                    if kind == "drop" and hyp(lpos[0] - x, lpos[1] - y) < 2.5:
+                        mx, my = 0.0, 0.0
             elif zdist > 3 and (not P.Ghost or z["next_radius"] <= 30):
                 mx, my = self.travel(me, zgx, zgy)
                 mode = "zone-walk"
@@ -996,6 +1044,9 @@ class Bot:
                         mx, my = mx * q, my * q
                     mode = "home"
 
+        if F["uf"] and mx == 0 and my == 0 and now - self.last_hurt < 1.5 and mode in ("idle", "home", "zone-walk", "flee", "cornered"):
+            side = 1.0 if int(now * 2) % 2 == 0 else -1.0
+            mx, my = -math.sin(self.hurt_bearing) * side, math.cos(self.hurt_bearing) * side
         if esc_jump:
             act["jump"] = True
         if P.Dodge and mode not in ("unstuck", "escape"):
