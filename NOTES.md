@@ -94,3 +94,9 @@ Kit example bot in the same sim: 1.02 (real baseline 1.15). Final v2 bot: about 
 
 - 750c031 (laser push): `lseek` laser pickup radius 300 m quiet / 70 m hot, `sweep` + `scan0_t` 3 spin scan and a 360 deg sweep every 6 s while laserless, `jet` jump-boost viewpoint during sweeps, `lsr` stand off at 125-155 m with a laser (targets to 200 m), `lethal` early laser release when the partial charge kills. `hyst` 0 (W behaviour). Sim n=40: 6.35 vs W 4.95; n=100 same bot 5.60.
 - Next commit (laser push + hunt): `harm` harmless-mech classification, `nofirst` no first strike while laserless, `hunt` walk to remembered mechs/sounds with a laser, `dpf` drops while fighting, `finish` no retreat when the target is nearly dead, `site` kill-site cubes for 40 s, `upg` 3 survivability-first upgrades, `acc` acceleration term in the gun lead. Sim does not model the squad reacting to kills or stealth, so its numbers for these are weak evidence.
+
+## Round 7: positioning and retreat from public bots' ideas (all behind P flags)
+
+- `fm` peek-fire fight movement: each tick score 17 nearby spots (range band, visible to the target only while a weapon is ready, hidden from other mechs, inside the zone, strafe bias); `lose` retreat only when losing (2+ near and HP < 55%, 3+ near and HP < 80%, HP < 35% and target healthier), held 1.5 s, off when the next circle <= 70 m or <= 3 alive; `upg` 4 plating/armor first; `fin` close to 20 m on a nearly dead target; `eng2` engage only near/hunting/aimed/weak mechs; `salt` re-rolls the RNG.
+- Sim n=300 (SE ~0.25): AB 5.10, lose 5.15, fm 5.43, lose+upg4 5.43, fm+lose+upg4 5.43, fm+fin 5.26, eng2 4.71 (worse, as AC's no-first-strike was). Practice scores re-roll by about +-0.5 with RNG alone, so `salt` makes resubmission a lottery ticket.
+- AD 544a213 = fm + lose + upg4; AE d3519a8 = lose + upg4; AF = AD with salt 1.
