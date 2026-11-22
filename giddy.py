@@ -17,15 +17,16 @@ from world import World, NNX, NNY
 # practice-side levers: cap = stop collecting cubes at this many (0 off), dboost = boost while dodging a shot above this energy,
 # spd = upgrade order (1 speed after plating/armor, 2 nanites+speed first), dheal = HP share below which a fight or retreat heads for a
 # supply drop within 250 m, dcalm = go for supply drops when calm (max distance), kite = back away fast from hunters closer than our
-# range (boost energy floor), tfocus = weight of damage-per-second in target choice
-FLAGS = dict(uf=0, sg=0, bub=0, home2=0, end=0, drop=0, pthr=0, cap=10, dboost=25, spd=2, dheal=0.95, dcalm=200, kite=0, tfocus=0)
+# range (boost energy floor), tfocus = weight of damage-per-second in target choice, arm = reach for a first laser or lightning pickup
+# before 30 s (boosting there), band = fight range as a band (gun 85-125 m, laser 110-175 m) instead of a single distance
+FLAGS = dict(uf=0, sg=0, bub=0, home2=0, end=0, drop=0, pthr=0, cap=10, dboost=25, spd=2, dheal=0.95, dcalm=200, kite=0, tfocus=1.5, arm=160, band=1)
 FLAGS.update(json.loads(os.environ.get("MECH_FLAGS", "{}")))
 F = FLAGS
 LAT = 0.075
 hyp = math.hypot
 PI = math.pi
 SOFT = 0.034  # soft deadline per decision, seconds
-SALT = 101  # mixed into the RNG seed; change it to re-roll strafing and home choices
+SALT = 102  # mixed into the RNG seed; change it to re-roll strafing and home choices
 
 BASE = dict(RetreatHP=0.38, RecoverHP=0.8, GunRange=85, LightRange=28, LaserRange=85, EngageDist=60, FarmNPC=True, Ghost=True,
             HomeExpo=120, LootRadius=90, CrateUntil=150, Dodge=True, NoMortar=True, Peek=True, LaserFirst=True, CrowdHide=True,
@@ -497,6 +498,13 @@ class Bot:
         x, y = me["pos"][0], me["pos"][1]
         P = self.P
         rp = self.pref_range(me, tg)
+        lo = hi = rp
+        if F["band"] and self.prac_on and tg.kind == "mech" and rp >= 60:
+            laser = self.weapon(me, "laser")
+            if rp == P.GunRange and laser is None:
+                hi = rp + 40
+            elif rp == P.LaserRange and laser is not None:
+                lo, hi = rp - 10, min(rp + 55, laser["stats"]["range"] - 15)
         bx, by = tg.pos[0] - x, tg.pos[1] - y
         bd = hyp(bx, by) + 1e-9
         ux, uy = bx / bd, by / bd
@@ -536,7 +544,7 @@ class Bot:
                     continue
             cz = W.walk_at(cx, cy)
             d = hyp(tg.pos[0] - cx, tg.pos[1] - cy)
-            s = -1.1 * abs(d - rp) - r * 0.4
+            s = -1.1 * max(0.0, lo - d, d - hi) - r * 0.4
             if kite:
                 s += 2.5 * (d - bd)
             los = W.clear(cx, cy, cz + mh, tc[0], tc[1], tc[2])
@@ -759,10 +767,17 @@ class Bot:
             seek = p.kind == "laser" and P.LaserSeek > rad
             if seek:
                 rad = P.LaserSeek
+            arm = F["arm"] and now < 30 and p.kind in ("laser", "lightning") and len(me["weapons"]) > 1 and me["weapons"][1] is None
+            if arm:
+                rad = max(rad, F["arm"])
             if self.want_pickup(me, p.kind) and hyp(p.pos[0] - x, p.pos[1] - y) < rad:
                 if F["sg"] and self.contested(p.pos, x, y):
                     continue
+                if arm and any(now - t.seen < 5 and hyp(t.pos[0] - p.pos[0], t.pos[1] - p.pos[1]) < 60 for t in self.tracks.values()):
+                    continue
                 v = 130.0 if len(me["weapons"]) > 1 and me["weapons"][1] is None else 60.0
+                if arm:
+                    v = 300.0
                 if seek:
                     v = max(v, 150)
                 consider("pickup", p.id, p.pos, v)
@@ -1092,6 +1107,9 @@ class Bot:
                     mx, my = self.travel(me, lpos[0], lpos[1])
                     if kind == "drop" and hyp(lpos[0] - x, lpos[1] - y) < 2.5:
                         mx, my = 0.0, 0.0
+                    if kind == "pickup" and F["arm"] and now < 30 and len(weapons) > 1 and weapons[1] is None and energy > 30 and \
+                            hyp(lpos[0] - x, lpos[1] - y) > 25:
+                        boost = True
             elif zdist > 3 and (not P.Ghost or z["next_radius"] <= 30):
                 mx, my = self.travel(me, zgx, zgy)
                 mode = "zone-walk"
