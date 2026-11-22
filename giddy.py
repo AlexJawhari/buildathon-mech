@@ -14,7 +14,7 @@ from world import World, NNX, NNY
 # survival-layer switches (A/B with MECH_FLAGS='{"uf":0}'): uf = cover and keep moving under fire in every mode, sg = skip contested
 # weapons and give up slow ones, bub = stay out of other mechs' fights, home2 = off-centre hiding spots that respect the shrinking
 # circle, end = heal before looting and pick on clearly weaker mechs in the end game, drop = supply drops when young, near and safe
-FLAGS = dict(uf=1, sg=1, bub=0, home2=0, end=0, drop=0)
+FLAGS = dict(uf=0, sg=0, bub=0, home2=0, end=0, drop=0, pthr=999)
 FLAGS.update(json.loads(os.environ.get("MECH_FLAGS", "{}")))
 F = FLAGS
 LAT = 0.075
@@ -210,7 +210,7 @@ class Bot:
                 self.tracks.pop(e.get("target"), None)
         if self.base is None:
             self.base, self.start_alive = self.P, o["alive"]
-        self.other_dead = self.other_dead + 1 if self.start_alive - o["alive"] - self.kills > 0 else 0
+        self.other_dead = self.other_dead + 1 if self.start_alive - o["alive"] - self.kills > F["pthr"] else 0
         if self.other_dead >= 5:
             self.not_practice = True
         on = self.base.Practice and not self.not_practice and now > 20
