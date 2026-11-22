@@ -14,7 +14,7 @@ from world import World, NNX, NNY
 # survival-layer switches (A/B with MECH_FLAGS='{"uf":0}'): uf = cover and keep moving under fire in every mode, sg = skip contested
 # weapons and give up slow ones, bub = stay out of other mechs' fights, home2 = off-centre hiding spots that respect the shrinking
 # circle, end = heal before looting and pick on clearly weaker mechs in the end game, drop = supply drops when young, near and safe
-FLAGS = dict(uf=0, sg=0, bub=0, home2=0, end=0, drop=0, pthr=999)
+FLAGS = dict(uf=0, sg=0, bub=0, home2=0, end=0, drop=0, pthr=2)
 FLAGS.update(json.loads(os.environ.get("MECH_FLAGS", "{}")))
 F = FLAGS
 LAT = 0.075
