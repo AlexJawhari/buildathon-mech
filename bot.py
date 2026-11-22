@@ -19,12 +19,16 @@ UPG2 = ["gun_mag", "gun_damage", "plating", "armor", "gun_rate", "nanites", "lig
 UPG67 = ["plating", "armor", "nanites", "gun_damage", "gun_rate", "laser_damage", "laser_charge", "lightning_efficiency", "servos", "gyros",
          "gun_velocity", "gun_mag", "reactor", "capacitor", "jets", "lightning_chain", "lightning_range", "sensors", "laser_pierce"]
 UPG3 = ["laser_damage", "laser_charge", "gun_mag", "gun_damage", "plating", "armor", "gun_rate", "nanites", "laser_pierce", "lightning_efficiency", "lightning_chain", "servos", "reactor", "capacitor", "gyros", "sensors", "jets"]
+UPG4 = ["plating", "armor", "laser_damage", "laser_charge", "nanites", "gun_damage", "gun_rate", "lightning_efficiency", "servos", "gun_mag", "gun_velocity", "gyros", "lightning_chain", "reactor", "capacitor", "sensors", "jets", "laser_pierce"]
+UPG5 = ["plating", "armor", "gun_damage", "nanites", "gun_rate", "lightning_efficiency", "laser_damage", "servos", "laser_charge", "gun_mag", "gun_velocity", "gyros", "lightning_chain", "reactor", "capacitor", "sensors", "jets", "laser_pierce"]
 PICK_W2 = {"laser": 3, "lightning": 2, "mortar": 1}
 PICK_W = {"lightning": 3, "laser": 2, "mortar": 1}
-P = {"retreat_hp": 0.5, "outnum": 2, "lo": 55, "hi": 110, "home_frac": 0.9, "scan": 0.28, "strafe": 1.0, "near_lo": -0.7, "flip_lo": 0.4, "flip_hi": 1.1, "retreat_jit": 0.0, "farm_until": 200, "farm_r": 100, "hyst": 0, "pick_r": 90, "cube_r": 45, "tol": 1.0, "stay": 0, "fire_max": 999, "upg": 3, "tscore": 1, "pmem": 1, "drop_r": 300, "engage": 0, "sticky": 0, "sneak": 0, "lzdodge": 0, "dtime": 0.4, "dboost": 1, "heal_to": 0.95, "dcross": 6.0, "dwt": 1.5, "dmin_e": 12, "ring_frac": 0.8, "mort": 1, "endg": 0, "lcap": 120, "laser1": 1, "scan0": 1, "pick_r0": 120, "lband": 0, "swap": 1, "explore": 120, "killloot": 1, "gunlaser": 0, "grab": 1, "xcells": 0, "kcube": 0, "avoid": 0, "farm_r0": 0, "eco": 1, "circ": 1, "band": 0,
+P = {"retreat_hp": 0.5, "outnum": 2, "lo": 55, "hi": 110, "home_frac": 0.9, "scan": 0.28, "strafe": 1.0, "near_lo": -0.7, "flip_lo": 0.4, "flip_hi": 1.1, "retreat_jit": 0.0, "farm_until": 200, "farm_r": 100, "hyst": 0, "pick_r": 90, "cube_r": 45, "tol": 1.0, "stay": 0, "fire_max": 999, "upg": 4, "tscore": 1, "pmem": 1, "drop_r": 300, "engage": 0, "sticky": 0, "sneak": 0, "lzdodge": 0, "dtime": 0.4, "dboost": 1, "heal_to": 0.95, "dcross": 6.0, "dwt": 1.5, "dmin_e": 12, "ring_frac": 0.8, "mort": 1, "endg": 0, "lcap": 120, "laser1": 1, "scan0": 1, "pick_r0": 120, "lband": 0, "swap": 1, "explore": 120, "killloot": 1, "gunlaser": 0, "grab": 1, "xcells": 0, "kcube": 0, "avoid": 0, "farm_r0": 0, "eco": 1, "circ": 1, "band": 0,
      # ideas studied from a public 6.29 bot, all off by default (see NOTES.md Round 6)
      "lseek": 1, "lfar": 300, "lhot": 70, "sweep": 1, "scan0_t": 3.0, "jet": 1, "lsr": 1, "lethal": 1,
-     "harm": 1, "nofirst": 1, "hunt": 1, "dpf": 1, "finish": 1, "site": 1, "acc": 1}
+     "harm": 0, "nofirst": 0, "hunt": 0, "dpf": 0, "finish": 0, "site": 0, "acc": 0,
+     # round 7: ideas from public 6.2-6.4 bots (see TECHNIQUES.md), all default off
+     "fm": 1, "lose": 1, "eng2": 0, "fin": 0, "salt": 0, "late_r": 70}
 if os.environ.get("MECH_P"):
     P.update(json.loads(os.environ["MECH_P"]))
 
@@ -38,12 +42,12 @@ def dist2(a, b):
 
 
 class Bot:
-    name = "mech-w-laserpush-hunt"
+    name = "mech-ad-peek-lose"
 
     def __init__(self, hello):
         cfg = hello["config"]
         self.cfg = cfg
-        self.rng = random.Random(hello.get("seed", 0))
+        self.rng = random.Random(hello.get("seed", 0) * 1000003 + P["salt"])
         self.w = World(hello["map"]["dir"])
         nav = self.w.nav
         self.cblock = bytearray()
@@ -97,6 +101,7 @@ class Bot:
         self.sweep_yaw = 0.0
         self.last_sweep = 0.0
         self.jet_on = False
+        self.lose_at = -99.0
 
     # ---------------------------------------------------------------- navigation
     def cfree(self, ci, cj):
@@ -250,6 +255,82 @@ class Bot:
             if best is None or sc < best[0]:
                 best = (sc, c, exp)
         return best
+
+    def late(self, obs):
+        return obs["zone"]["next_radius"] <= P["late_r"] or obs.get("alive", 16) <= 3
+
+    def fight_move(self, obs, me, tg, lo_r, hi_r, slot1, mechs, t, t0):
+        """Pick the best of 17 nearby spots: hold the range band, be visible to the target only while a weapon is ready
+        (peek-fire: hide while the gun reloads), stay out of other mechs' sight, inside the zone, with a strafe bias."""
+        pos = self.pos
+        w = self.w
+        ex, ey = tg["pos"][0], tg["pos"][1]
+        dd = math.hypot(ex - pos[0], ey - pos[1]) or 1.0
+        ux, uy = (ex - pos[0]) / dd, (ey - pos[1]) / dd
+        sx, sy = -uy * self.strafe, ux * self.strafe
+        gun = me["weapons"][0]
+        ready = bool(gun and gun["ammo"] > 0 and gun["reload"] <= 0.25 and dd <= gun["stats"]["range"] - 10) or slot1 in ("laser", "lightning")
+        want = 1.0 if ready else -1.0
+        tz = tg["pos"][2] + 4.5
+        z = obs["zone"]
+        ss, se = z.get("shrink_start", 1e9), z.get("shrink_end", 1e9)
+        f = min(1.0, max(0.0, (t + 8 - ss) / max(1.0, se - ss)))
+        zcx = z["center"][0] + (z["next_center"][0] - z["center"][0]) * f
+        zcy = z["center"][1] + (z["next_center"][1] - z["center"][1]) * f
+        zr = z["radius"] + (z["next_radius"] - z["radius"]) * f
+        mid = 0.5 * (lo_r + hi_r)
+        cands = []
+        blocked_side = False
+        rings = (6.0,) if ready else (6.0, 13.0)
+        for k in range(-1, 16 * len(rings)):
+            if k < 0:
+                cx, cy, dx, dy, r = pos[0], pos[1], 0.0, 0.0, 0.0
+            else:
+                a = (k % 16) * math.pi / 8
+                r = rings[k // 16]
+                dx, dy = math.cos(a), math.sin(a)
+                cx, cy = pos[0] + dx * r, pos[1] + dy * r
+                if w.blocked_nav(cx, cy) or not self.line_free(pos, (cx, cy)):
+                    if k < 16 and dx * sx + dy * sy > 0.9:
+                        blocked_side = True
+                    continue
+            d = math.hypot(ex - cx, ey - cy)
+            s = -1.1 * max(0.0, lo_r - d, d - hi_r) - 0.1 * abs(d - mid) - 0.4 * r
+            s -= 1.5 * max(0.0, math.hypot(cx - zcx, cy - zcy) - (zr - 10))
+            if want > 0:
+                s += 9 * (dx * sx + dy * sy)
+            if k < 0:
+                s -= 8
+            cands.append([s, cx, cy, dx, dy, k])
+        if blocked_side:
+            self.strafe = -self.strafe
+            self.strafe_until = t + 0.5
+        # visibility to the target (the one LOS per candidate) and to the other mechs (top few only)
+        for c in cands:
+            if time.perf_counter() - t0 > 0.016:
+                break
+            gz = w.ground(c[1], c[2])
+            los = w.los((c[1], c[2], gz + 7), (ex, ey, tz), 3.0)
+            c.append(los)
+            if los:
+                c[0] += 45 * want
+            elif c[5] < 0 and want < 0:
+                c[0] += 14
+        cands = [c for c in cands if len(c) > 6]
+        cands.sort(key=lambda c: -c[0])
+        others = [m for m in mechs if m is not tg and m["d"] < 170][:2]
+        if others:
+            for c in cands[:5]:
+                if time.perf_counter() - t0 > 0.019:
+                    break
+                gz = w.ground(c[1], c[2])
+                for m in others:
+                    if w.los((m["pos"][0], m["pos"][1], m["pos"][2] + 8), (c[1], c[2], gz + 5.4), 3.0):
+                        c[0] -= 30
+            cands[:5] = sorted(cands[:5], key=lambda c: -c[0])
+        if not cands:
+            return (-uy * self.strafe, ux * self.strafe)
+        return (cands[0][3], cands[0][4])
 
     def exposed_to_known(self, close):
         """Keep the mortar for quiet moments: skip when a visible mech is already close."""
@@ -491,7 +572,8 @@ class Bot:
         act = {"tick": obs["tick"]}
         if obs["offer"]:
             ids = [c["id"] for c in obs["offer"]["choices"]]
-            up = UPG67 if P["upg"] == 3 else (UPG3 if (P["upg"] == 2 and "laser" in [(w or {}).get("kind") for w in me["weapons"]]) else UPG2) if P["upg"] else UPG
+            hl_ = "laser" in [(w or {}).get("kind") for w in me["weapons"]]
+            up = (UPG4 if hl_ else UPG5) if P["upg"] == 4 else UPG67 if P["upg"] == 3 else (UPG3 if (P["upg"] == 2 and "laser" in [(w or {}).get("kind") for w in me["weapons"]]) else UPG2) if P["upg"] else UPG
             order = sorted(range(len(ids)), key=lambda i: up.index(ids[i]) if ids[i] in up else 99)
             act["pick"] = order[0]
         hp, mhp = me["hp"], me["max_hp"]
@@ -548,6 +630,19 @@ class Bot:
                     back = abs(wrap(math.atan2(ay, ax) - m["aim"][0])) > math.pi / 2
                     m["sc"] = m.get("hp", 1400) / (1.5 if back else 1.0) + m["d"] * 3
                 vis = sorted(vis, key=lambda m: m["sc"])
+            if P["eng2"]:
+                # giddy practice rule: fight what is near (<60 m), hit us in 6 s, closes in (>3 m/s, <180 m), is weak (<40%, <160 m) or aims at us (<190 m)
+                keep_ = []
+                for m in vis:
+                    ax, ay = pos[0] - m["pos"][0], pos[1] - m["pos"][1]
+                    vx_, vy_ = (m.get("vel") or [0, 0, 0])[:2]
+                    clos = (vx_ * ax + vy_ * ay) / (math.hypot(ax, ay) or 1)
+                    aimed = abs(wrap(math.atan2(ay, ax) - m["aim"][0])) < 0.22
+                    if (m["d"] < 60 or t - self.hit_t.get(m["id"], -99) < 6 or (clos > 3 and m["d"] < 180)
+                            or (m.get("hp", 1400) < 0.4 * m.get("max_hp", 1400) and m["d"] < 160) or (aimed and m["d"] < 190)
+                            or self.late(obs)):
+                        keep_.append(m)
+                vis = keep_
             if P["engage"]:
                 for m in vis:
                     ax, ay = pos[0] - m["pos"][0], pos[1] - m["pos"][1]
@@ -574,6 +669,22 @@ class Bot:
                 target = n; tkind = "npc"
         outnum = len(real if P["harm"] else close) >= P["outnum"]
         low0 = hp < P["retreat_hp"] * mhp
+        retreat_now = None
+        if P["lose"]:
+            # giddy loss rule: retreat only when really losing the exchange, held 1.5 s; never in the end game
+            hf = hp / mhp
+            near = sum(1 for m in mechs if m["d"] < 160)
+            tf = target.get("hp", 1400) / max(1.0, target.get("max_hp", 1400)) if (target is not None and tkind == "mech") else None
+            losing = (near >= 2 and hf < 0.55) or (near >= 3 and hf < 0.8)
+            if tf is not None:
+                if hf < 0.35 and tf > hf + 0.1:
+                    losing = True
+                if tf < 0.25 and hf > 0.2 and near <= 2:
+                    losing = False
+            if losing:
+                self.lose_at = t
+            retreat_now = t - self.lose_at < 1.5 and not self.late(obs)
+            outnum = False; low0 = False
         finish = (P["finish"] and target is not None and tkind == "mech" and not outnum and not self.healing and low0
                   and target.get("hp", 1e9) < 0.6 * hp and t - self.trk[target["id"]]["t"] < 0.3)
         low = (hp < P["retreat_hp"] * mhp and not finish) or (P["hyst"] and self.healing and hp < P["heal_to"] * mhp)
@@ -591,7 +702,9 @@ class Bot:
                 else:
                     goal = self.ring_point(obs, zc, zr)
             boost = edge < 0 and me["energy"] > 10
-        elif target is not None and tkind == "mech" and (low or outnum or (hurt_recent and target["d"] > 150) or (P["avoid"] and slot1 != "laser" and target["d"] > P["avoid"] and not self.healing_ok)):
+        elif target is not None and tkind == "mech" and P["lose"] and retreat_now:
+            mode = "retreat"
+        elif target is not None and tkind == "mech" and not P["lose"] and (low or outnum or (hurt_recent and target["d"] > 150) or (P["avoid"] and slot1 != "laser" and target["d"] > P["avoid"] and not self.healing_ok)):
             mode = "retreat"
         elif target is not None:
             mode = "fight"
@@ -747,6 +860,12 @@ class Bot:
                 ix, iy = zc[0] - pos[0], zc[1] - pos[1]
                 il = math.hypot(ix, iy) or 1
                 wish = (wish[0] + ix / il * 0.8, wish[1] + iy / il * 0.8)
+            if P["fm"] and tkind == "mech":
+                fin_ = (P["fin"] and target.get("hp", 1400) < 0.38 * target.get("max_hp", 1400) and hp > 0.42 * mhp
+                        and sum(1 for m in mechs if m["d"] < 150) <= 2)
+                if fin_:
+                    lo_r, hi_r = 15, 25
+                wish = self.fight_move(obs, me, target, lo_r, hi_r, slot1, mechs, t, t0)
         else:
             if P["stay"] and edge > 45 and t < P["stay"]:
                 if self.stay_spot is None:
