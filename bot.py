@@ -1,6 +1,6 @@
-"""Entry point: the planner-based decision core (brain.py) on top of the navigation and tracking code in base.py."""
+"""Entry point: Python port of the giddygiddyboy pilot (giddy.py) on the mechfight wrapper."""
 import mechfight as mf
-from brain import Bot
+from giddy import Bot
 
 if __name__ == "__main__":
     mf.run(Bot)
