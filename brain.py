@@ -10,7 +10,7 @@ import base
 import plan
 from base import P, TAU, UPG67, dist2, wrap
 
-V = {"idle_k": 0.5, "juke_all": 0, "nofirst": 0, "harm": 0, "hunt": 1, "dp": 1, "site": 1, "salt": 0}
+V = {"idle_k": 0.9, "juke_all": 0, "nofirst": 0, "harm": 0, "hunt": 1, "dp": 1, "site": 1, "salt": 0}
 if os.environ.get("MECH_V"):
     V.update(json.loads(os.environ["MECH_V"]))
 P.update(acc=1, site=V["site"], harm=V["harm"], salt=V["salt"], lethal=1)
