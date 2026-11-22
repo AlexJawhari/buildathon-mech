@@ -59,8 +59,9 @@ NNX, NNY = (NX + 1) // 2, (NY + 1) // 2
 NBR = ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1))
 
 
-def _build_nav(self):
-    """Blocked / surface / clearance / connected-component layers on 2 m cells (cell c = j*NNX+i sits at MINX+2i, MINY+2j)."""
+def _build_nav(self, map_dir=None):
+    """Blocked / surface / clearance / connected-component layers on 2 m cells (cell c = j*NNX+i sits at MINX+2i, MINY+2j).
+    With map_dir the layers come from the exact prisms (shot geometry is loaded too); the 1 m raster is the fallback."""
     from collections import deque
     n = NNX * NNY
     blk = bytearray(n)
@@ -68,6 +69,20 @@ def _build_nav(self):
     for j in range(NNY):
         blk[j * NNX:(j + 1) * NNX] = self.nav[2 * j * NX:2 * j * NX + NX:2]
         surf[j * NNX:(j + 1) * NNX] = [v * 0.01 for v in self.ter[2 * j * NX:2 * j * NX + NX:2]]
+    self.blk, self.surf = blk, surf
+    if map_dir:
+        try:
+            self.load_geo(map_dir)
+            cache = os.path.join(HERE, "arena_nav.bin.gz")
+            if os.path.exists(cache):  # written by `python3 world.py <map_dir>`; recomputed (about 5 s) when absent
+                raw = gzip.open(cache).read()
+                self.blk[:] = raw[:n]
+                self.surf[:] = array("f", raw[n:]).tolist()
+            else:
+                self.nav_from_geo()
+        except Exception:
+            import traceback
+            traceback.print_exc()
     for i in range(NNX):
         blk[i] = blk[(NNY - 1) * NNX + i] = 1
     for j in range(NNY):
@@ -358,6 +373,19 @@ def clear(self, ax, ay, az, bx, by, bz):
     return True
 
 
+def cover_hidden(self, eyes, cx, cy, cz, height):
+    """No eye in `eyes` sees the head or the middle of a mech standing at (cx, cy): the 1 m raster rejects exposed cells
+    cheaply, the exact test confirms hidden ones."""
+    raster, exact = World.clear, self.clear
+    for e in eyes:
+        if raster(self, e[0], e[1], e[2], cx, cy, cz + height) or raster(self, e[0], e[1], e[2], cx, cy, cz + height * 0.5):
+            return False
+    for e in eyes:
+        if exact(e[0], e[1], e[2], cx, cy, cz + height) or exact(e[0], e[1], e[2], cx, cy, cz + height * 0.5):
+            return False
+    return True
+
+
 def exposure(self, x, y):
     """Mean free sight distance (0..1 of 200 m) over 24 rays from head height; low = enclosed."""
     z = self.top_at(x, y) + 7
@@ -381,5 +409,264 @@ def exposure(self, x, y):
 
 
 for _f in (_build_nav, cell, cell_pos, free, reachable, in_bounds, nearest_free, line_walkable, astar, main_near, off_main, escape_plan,
-           obst, top_at, clear, exposure):
+           obst, top_at, clear, cover_hidden, exposure):
     setattr(World, _f.__name__.lstrip("_") if _f.__name__ != "_build_nav" else "build_nav", _f)
+
+
+# ---------------------------------------------------------------- exact shot geometry from world.json prisms + terrain heightfield
+GEO_CELL = 16.0
+
+
+def _point_in_poly(e, x, y):
+    inside = False
+    for i in range(0, len(e), 4):
+        y0, y1 = e[i + 1], e[i + 3]
+        if (y0 > y) != (y1 > y) and x < (e[i + 2] - e[i]) * (y - y0) / (y1 - y0) + e[i]:
+            inside = not inside
+    return inside
+
+
+def load_geo(self, map_dir):
+    """Prisms (buildings, stadium, bridges) on a 16 m grid plus 8 m block maxima of the terrain; enables clear_exact/walk_at."""
+    import json
+    wj = json.load(open(os.path.join(map_dir, "v2", "world.json")))
+    b = wj["bounds"]
+    self.bx0, self.bx1, self.by0, self.by1 = b["minX"], b["maxX"], b["minY"], b["maxY"]
+    self.gx0, self.gy0 = self.bx0 - GEO_CELL, self.by0 - GEO_CELL
+    self.gnx = int(math.ceil((self.bx1 - self.bx0) / GEO_CELL)) + 3
+    self.gny = int(math.ceil((self.by1 - self.by0) / GEO_CELL)) + 3
+    self.prisms = []
+    self.gridp = [[] for _ in range(self.gnx * self.gny)]
+    for p in wj["prisms"]:
+        edges = []
+        mnx = mny = 1e18
+        mxx = mxy = -1e18
+        for r in [p["ring"]] + p["holes"]:
+            m = len(r) // 2
+            for a in range(m):
+                c = (a + 1) % m
+                edges += [r[a * 2], r[a * 2 + 1], r[c * 2], r[c * 2 + 1]]
+                mnx, mxx = min(mnx, r[a * 2]), max(mxx, r[a * 2])
+                mny, mxy = min(mny, r[a * 2 + 1]), max(mxy, r[a * 2 + 1])
+        idx = len(self.prisms)
+        self.prisms.append((p["base"], p["top"], edges, mnx, mny, mxx, mxy, p["kind"] == "bridge"))
+        i0 = max(0, int((mnx - self.gx0) // GEO_CELL)); i1 = min(self.gnx - 1, int((mxx - self.gx0) // GEO_CELL))
+        j0 = max(0, int((mny - self.gy0) // GEO_CELL)); j1 = min(self.gny - 1, int((mxy - self.gy0) // GEO_CELL))
+        for j in range(j0, j1 + 1):
+            for i in range(i0, i1 + 1):
+                self.gridp[j * self.gnx + i].append(idx)
+    self.bnx, self.bny = (NX + 7) // 8, (NY + 7) // 8
+    bm = [-1e9] * (self.bnx * self.bny)
+    ter = self.ter
+    for j in range(NY):
+        row = j * NX
+        for bi in range(self.bnx):
+            v = max(ter[row + bi * 8: row + bi * 8 + 8])
+            k = (j // 8) * self.bnx + bi
+            if v > bm[k]:
+                bm[k] = v
+    bmx = bm[:]
+    for j in range(self.bny):
+        for i in range(self.bnx):
+            v = bm[j * self.bnx + i]
+            if i + 1 < self.bnx:
+                v = max(v, bm[j * self.bnx + i + 1])
+            if j + 1 < self.bny:
+                v = max(v, bm[(j + 1) * self.bnx + i])
+                if i + 1 < self.bnx:
+                    v = max(v, bm[(j + 1) * self.bnx + i + 1])
+            bmx[j * self.bnx + i] = v * 0.01
+    self.blockmax = bmx
+    self.exact = True
+
+
+def _ray_hits_prism(p, x, y, z, dx, dy, dz):
+    """Segment (x,y,z)+t*(dx,dy,dz), t in [0,1], touches prism p (boolean port of the original rayPrism)."""
+    base, top, e, mnx, mny, mxx, mxy, _ = p
+    t0, t1 = 0.0, 1.0
+    for o, d, lo, hi in ((x, dx, mnx, mxx), (y, dy, mny, mxy), (z, dz, base, top)):
+        if -1e-9 < d < 1e-9:
+            if o < lo or o > hi:
+                return False
+        else:
+            a, b = (lo - o) / d, (hi - o) / d
+            if a > b:
+                a, b = b, a
+            if a > t0:
+                t0 = a
+            if b < t1:
+                t1 = b
+            if t0 > t1:
+                return False
+    if base <= z <= top and _point_in_poly(e, x, y):
+        return True
+    for i in range(0, len(e), 4):
+        ex, ey = e[i + 2] - e[i], e[i + 3] - e[i + 1]
+        den = dx * ey - dy * ex
+        if -1e-9 < den < 1e-9:
+            continue
+        px, py = e[i] - x, e[i + 1] - y
+        t = (px * ey - py * ex) / den
+        if t < 0 or t >= 1:
+            continue
+        s = (px * dy - py * dx) / den
+        if s < 0 or s > 1:
+            continue
+        hz = z + dz * t
+        if base <= hz <= top:
+            return True
+    if dz > 1e-9 or dz < -1e-9:
+        for cz, up in ((top, True), (base, False)):
+            t = (cz - z) / dz
+            if t < 0 or t >= 1 or (up and dz > 0) or (not up and dz < 0):
+                continue
+            if _point_in_poly(e, x + dx * t, y + dy * t):
+                return True
+    return False
+
+
+def _ray_terrain(self, x, y, z, dx, dy, dz):
+    ground = self.ground
+    if z < ground(x, y):
+        return True
+    hl = math.hypot(dx, dy)
+    step = 0.5 / hl if hl > 1e-9 else 1.0
+    bm, bnx, bny = self.blockmax, self.bnx, self.bny
+    t = 0.0
+    while t < 1.0:
+        px, py = x + dx * t, y + dy * t
+        bi = int(math.floor((px - MINX) / 8))
+        bj = int(math.floor((py - MINY) / 8))
+        tb = 1.0
+        if hl > 1e-9:
+            ex, ey = MINX + bi * 8, MINY + bj * 8
+            nx = ny = 1e18
+            if dx > 1e-9:
+                nx = (ex + 8 - px) / dx
+            elif dx < -1e-9:
+                nx = (ex - px) / dx
+            if dy > 1e-9:
+                ny = (ey + 8 - py) / dy
+            elif dy < -1e-9:
+                ny = (ey - py) / dy
+            tb = min(t + max(0.0, min(nx, ny)) + 1e-6, 1.0)
+        if 0 <= bi < bnx and 0 <= bj < bny and min(z + dz * t, z + dz * tb) > bm[bj * bnx + bi]:
+            t = tb
+            continue
+        s = min(t + step, 1.0)
+        if z + dz * s < ground(x + dx * s, y + dy * s):
+            return True
+        if s >= 1.0:
+            break
+        t = s
+    return False
+
+
+def clear_exact(self, ax, ay, az, bx, by, bz):
+    """Shot line a->b clear of prisms and terrain (the original's ShotClear: trees never block)."""
+    dx, dy, dz = bx - ax, by - ay, bz - az
+    gx0, gy0, gnx, gny = self.gx0, self.gy0, self.gnx, self.gny
+    ci = int(math.floor((ax - gx0) / GEO_CELL)); cj = int(math.floor((ay - gy0) / GEO_CELL))
+    ei = int(math.floor((bx - gx0) / GEO_CELL)); ej = int(math.floor((by - gy0) / GEO_CELL))
+    si = 1 if dx > 0 else -1
+    sj = 1 if dy > 0 else -1
+    tdx = tdy = tmx = tmy = 1e18
+    if abs(dx) > 1e-9:
+        tdx = GEO_CELL / abs(dx)
+        tmx = ((ci + 1) * GEO_CELL + gx0 - ax) / dx if dx > 0 else (ax - (ci * GEO_CELL + gx0)) / -dx
+    if abs(dy) > 1e-9:
+        tdy = GEO_CELL / abs(dy)
+        tmy = ((cj + 1) * GEO_CELL + gy0 - ay) / dy if dy > 0 else (ay - (cj * GEO_CELL + gy0)) / -dy
+    grid, prisms = self.gridp, self.prisms
+    done = set()
+    for _ in range(4096):
+        if 0 <= ci < gnx and 0 <= cj < gny:
+            for pi in grid[cj * gnx + ci]:
+                if pi not in done:
+                    done.add(pi)
+                    if _ray_hits_prism(prisms[pi], ax, ay, az, dx, dy, dz):
+                        return False
+        if ci == ei and cj == ej:
+            break
+        if tmx < tmy:
+            t = tmx; tmx += tdx; ci += si
+        else:
+            t = tmy; tmy += tdy; cj += sj
+        if t > 1:
+            break
+    return not self._ray_terrain(ax, ay, az, dx, dy, dz)
+
+
+def stack_kind(self, x, y, deck=True):
+    """(standing height, id of the topmost prism or -1): ground raised by prisms within a step, plus bridge decks."""
+    g = self.ground(x, y)
+    z = g
+    pid = -1
+    c = int(math.floor((y - self.gy0) / GEO_CELL)) * self.gnx + int(math.floor((x - self.gx0) / GEO_CELL))
+    if not 0 <= c < len(self.gridp):
+        return z, pid
+    ps = self.gridp[c]
+    for _ in range(8):
+        moved = False
+        for pi in ps:
+            base, top, e, mnx, mny, mxx, mxy, bridge = self.prisms[pi]
+            if top <= z or x < mnx or x > mxx or y < mny or y > mxy:
+                continue
+            if not (base <= z + 1.5 or (deck and bridge and top - g < 6.5)):
+                continue
+            if _point_in_poly(e, x, y):
+                z, pid = top, pi
+                moved = True
+        if not moved:
+            break
+    return z, pid
+
+
+def walk_at(self, x, y, deck=True):
+    return self.stack_kind(x, y, deck)[0]
+
+
+def wall_within(self, x, y, z, r, h=9.0):
+    """A prism taller than a step and lower than z+h has an edge within r of (x, y), or contains it."""
+    lo, hi, r2 = z + 1.2, z + h, r * r
+    gx0, gy0, gnx, gny = self.gx0, self.gy0, self.gnx, self.gny
+    for j in range(max(0, int((y - r - gy0) // GEO_CELL)), min(gny - 1, int((y + r - gy0) // GEO_CELL)) + 1):
+        for i in range(max(0, int((x - r - gx0) // GEO_CELL)), min(gnx - 1, int((x + r - gx0) // GEO_CELL)) + 1):
+            for pi in self.gridp[j * gnx + i]:
+                base, top, e, mnx, mny, mxx, mxy, _ = self.prisms[pi]
+                if top <= lo or base >= hi or x + r < mnx or x - r > mxx or y + r < mny or y - r > mxy:
+                    continue
+                for k in range(0, len(e), 4):
+                    x0, y0 = e[k], e[k + 1]
+                    ux, uy = e[k + 2] - x0, e[k + 3] - y0
+                    l2 = ux * ux + uy * uy
+                    t = max(0.0, min(1.0, ((x - x0) * ux + (y - y0) * uy) / l2)) if l2 > 1e-9 else 0.0
+                    mx, my = x0 + ux * t - x, y0 + uy * t - y
+                    if mx * mx + my * my < r2:
+                        return True
+                if _point_in_poly(e, x, y):
+                    return True
+    return False
+
+
+def nav_from_geo(self, r=2.6):
+    """Exact blocked/surface layers from the prisms (needs load_geo): walls within r, roofs, map edge."""
+    for c in range(NNX * NNY):
+        x, y = self.cell_pos(c)
+        z, pid = self.stack_kind(x, y, True)
+        self.surf[c] = z
+        roof = pid >= 0 and not self.prisms[pid][7] and z - self.ground(x, y) > 1.5
+        self.blk[c] = int(roof or x < self.bx0 + r or x > self.bx1 - r or y < self.by0 + r or y > self.by1 - r
+                          or self.wall_within(x, y, z, r))
+
+
+for _f in (load_geo, _ray_terrain, clear_exact, stack_kind, walk_at, wall_within, nav_from_geo):
+    setattr(World, _f.__name__, _f)
+
+
+if __name__ == "__main__":
+    import sys
+    w = World(sys.argv[1])
+    w.build_nav(sys.argv[1])
+    with gzip.open(os.path.join(HERE, "arena_nav.bin.gz"), "wb") as f:
+        f.write(bytes(w.blk) + array("f", w.surf).tobytes())

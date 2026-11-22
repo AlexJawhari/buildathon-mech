@@ -3,6 +3,7 @@
 Parameters that are zero in both parameter sets (explore, econ, odds, shy, ...) and the never-picked mortar are left out.
 Per-tick work is bounded by a soft deadline (cover search, home scoring and path search degrade or spread over ticks)."""
 import math
+import os
 import random
 import time
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ LAT = 0.075
 hyp = math.hypot
 PI = math.pi
 SOFT = 0.034  # soft deadline per decision, seconds
+SALT = int(os.environ.get("MECH_SALT", 0))  # mixed into the RNG seed; change it to re-roll strafing and home choices
 
 BASE = dict(RetreatHP=0.38, RecoverHP=0.8, GunRange=85, LightRange=28, LaserRange=85, EngageDist=60, FarmNPC=True, Ghost=True,
             HomeExpo=120, LootRadius=90, CrateUntil=150, Dodge=True, NoMortar=True, Peek=True, LaserFirst=True, CrowdHide=True,
@@ -71,9 +73,13 @@ class Bot:
         self.cfg = hello["config"]
         self.slot = hello.get("slot", 0)
         seed = hello.get("seed", 0) or self.slot + 1
-        self.rng = random.Random(seed)
+        self.rng = random.Random(seed + SALT)
         self.W = World(hello["map"]["dir"])
-        self.W.build_nav()
+        self.W.build_nav(hello["map"]["dir"])
+        if hasattr(self.W, "exact"):
+            self.W.clear = self.W.clear_exact
+        else:
+            self.W.walk_at = self.W.ground
         self.W.main_near(0)  # prebuild the escape lookup so no tick pays for it
         self.P = SimpleNamespace(**BASE)
         self.base = None
@@ -98,6 +104,8 @@ class Bot:
         self.stick_id, self.stick_at, self.lose_at = 0, 0.0, 0.0
         self.t0 = 0.0
         self.mode = ""
+        self.csearch, self.cs_best, self.cs_touch, self.cs_deadline = None, (-1, math.inf), 0.0, 0.0
+        self.trunc = {"cover": 0, "cover_n": 0, "fight": 0, "fight_n": 0, "astar_ticks": 0, "home_ticks": 0, "slow": 0, "n": 0}
 
     # ------------------------------------------------------------------ entry
     def act(self, o):
@@ -109,6 +117,9 @@ class Bot:
             import traceback
             traceback.print_exc()
             act = {"aim": list(self.last_aim)}
+        self.trunc["n"] += 1
+        if time.perf_counter() - self.t0 > 0.03:
+            self.trunc["slow"] += 1
         a = act.get("aim")
         if a is not None:
             if all(math.isfinite(v) for v in a):
@@ -270,6 +281,7 @@ class Bot:
                 self.path, self.path_goal, self.path_at, self.path_i, self.srch = r[1], (self.srch[0], self.srch[1]), self.now, 0, None
                 return
             if time.perf_counter() > t_end:
+                self.trunc["astar_ticks"] += 1
                 return
 
     def travel(self, me, gx, gy):
@@ -470,6 +482,7 @@ class Bot:
             d = hyp(c.pos[0] - x, c.pos[1] - y)
             if d < 40 and d < cube_d and abs(c.pos[2] - me["pos"][2]) < 4:
                 cube, cube_d = c, d
+        self.trunc["fight_n"] += 1
         best, bmx, bmy = -math.inf, 0.0, 0.0
         blocked_side = False
         rings = 2 if P.Peek else 1
@@ -479,6 +492,7 @@ class Bot:
             cx, cy, dx, dy, r = x, y, 0.0, 0.0, 0.0
             if k >= 0:
                 if self.left() < 0.008 and k >= 8:
+                    self.trunc["fight"] += 1
                     break
                 dx, dy = CAND[k % 16]
                 r = 6.0 * (1 + k // 16)
@@ -487,7 +501,7 @@ class Bot:
                     if k < 16 and dx * sx + dy * sy > 0.9:
                         blocked_side = True
                     continue
-            cz = W.ground(cx, cy)
+            cz = W.walk_at(cx, cy)
             d = hyp(tg.pos[0] - cx, tg.pos[1] - cy)
             s = -1.1 * abs(d - rp) - r * 0.4
             los = W.clear(cx, cy, cz + mh, tc[0], tc[1], tc[2])
@@ -497,7 +511,7 @@ class Bot:
                 for qx, qy in RING_Q:
                     qx += cx
                     qy += cy
-                    if W.free(qx, qy) and W.clear(qx, qy, W.ground(qx, qy) + mh, tc[0], tc[1], tc[2]) != los:
+                    if W.free(qx, qy) and W.clear(qx, qy, W.walk_at(qx, qy) + mh, tc[0], tc[1], tc[2]) != los:
                         s += 8
                         break
             bz = cz + height * 0.6
@@ -527,42 +541,58 @@ class Bot:
 
     # ------------------------------------------------------------------ cover
     def cover_move(self, o, seen):
-        """Move toward the nearest cell hidden from every threat; (mx, my) or None."""
+        """Move toward the nearest cell hidden from every threat; (mx, my) or None. The BFS over candidate cells is resumable:
+        when a tick's time slice runs out it continues next tick, heading for the best cell found so far meanwhile."""
         me = o["self"]
-        W = self.W
         x, y = me["pos"][0], me["pos"][1]
-        threats = [t for t in seen if hyp(t.pos[0] - x, t.pos[1] - y) < 230]
-        if not threats:
-            return None
-        if len(threats) > 4:
-            threats = sorted(threats, key=lambda t: hyp(t.pos[0] - x, t.pos[1] - y))[:4]
-        eyes = [self.eye(t) for t in threats]
-        height = me["stats"]["height"]
-        clear = W.clear
-
-        def hidden(cx, cy):
-            cz = W.ground(cx, cy)
-            for e in eyes:
-                if clear(e[0], e[1], e[2], cx, cy, cz + height) or clear(e[0], e[1], e[2], cx, cy, cz + height * 0.5):
-                    return False
-            return True
-
-        z = o["zone"]
-        if self.cover_ok and self.now - self.cover_at < 0.4:
+        if self.csearch is not None and self.now - self.cs_touch > 1.0:
+            self.csearch = None
+        if self.csearch is None:
+            if self.cover_ok and self.now - self.cover_at < 0.4:
+                return self.travel_cover(me)
+            threats = sorted((t for t in seen if hyp(t.pos[0] - x, t.pos[1] - y) < 230),
+                             key=lambda t: hyp(t.pos[0] - x, t.pos[1] - y))[:4]
+            if not threats:
+                return None
+            self.cover_at = self.now
+            eyes = [self.eye(t) for t in threats]
+            height = me["stats"]["height"]
+            W = self.W
+            if W.cover_hidden(eyes, x, y, W.walk_at(x, y), height) and self.zone_penalty(o["zone"], x, y) == 0:
+                self.cover_ok, self.cover_goal = True, (x, y)
+                return 0.0, 0.0
+            self.csearch = self._cover_search(o["zone"], x, y, threats, eyes, height)
+            self.cs_best = (-1, math.inf)
+        self.cs_touch = self.now
+        t_end = time.perf_counter() + max(0.003, min(0.012, self.left() - 0.006))
+        self.cs_deadline = t_end
+        for r in self.csearch:
+            if r is None:
+                self.trunc["cover"] += 1
+                break
+            self.csearch = None
+            self.cover_at = self.now
+            if r[0] < 0:
+                self.cover_ok = False
+                return None
+            self.cover_ok, self.cover_goal = True, self.W.cell_pos(r[0])
             return self.travel_cover(me)
-        self.cover_at = self.now
-        if hidden(x, y) and self.zone_penalty(z, x, y) == 0:
-            self.cover_ok, self.cover_goal = True, (x, y)
-            return 0.0, 0.0
+        if self.csearch is not None and self.cs_best[0] >= 0:  # provisional: the best cell so far
+            self.cover_ok, self.cover_goal = True, self.W.cell_pos(self.cs_best[0])
+        return self.travel_cover(me) if self.cover_ok else None
+
+    def _cover_search(self, z, x, y, threats, eyes, height):
+        W = self.W
         s = W.nearest_free(W.cell(x, y))
         if s < 0:
-            return None
+            yield (-1, 0)
+            return
+        self.trunc["cover_n"] += 1
         steps = {s: 0}
         queue = [s]
         best_c, best_s = -1, math.inf
         checked = 0
-        t_end = time.perf_counter() + max(0.002, min(0.012, self.left() - 0.006))
-        blk, surf = W.blk, W.surf
+        blk, surf, hidden = W.blk, W.surf, W.cover_hidden
         for c in queue:
             if checked >= 350:
                 break
@@ -573,14 +603,15 @@ class Bot:
             if (ci + cj) % 2 == 0 and st > 0:
                 cx, cy = W.cell_pos(c)
                 checked += 1
-                if hidden(cx, cy):
+                if hidden(eyes, cx, cy, W.walk_at(cx, cy), height):
                     sc = st * 2 + self.zone_penalty(z, cx, cy)
                     near = min(hyp(t.pos[0] - cx, t.pos[1] - cy) for t in threats)
                     sc -= min(near, 80) * 0.25
                     if sc < best_s:
                         best_c, best_s = c, sc
-                if time.perf_counter() > t_end:
-                    break
+                        self.cs_best = (best_c, best_s)
+                if time.perf_counter() > self.cs_deadline:
+                    yield None
             for k, (di, dj) in enumerate(NBRS):
                 nb = c + dj * NNX + di
                 if nb in steps or blk[nb] or surf[nb] - surf[c] > (3.1 if k >= 4 else 2.2):
@@ -589,11 +620,7 @@ class Bot:
                     continue
                 steps[nb] = st + 1
                 queue.append(nb)
-        if best_c < 0:
-            self.cover_ok = False
-            return None
-        self.cover_ok, self.cover_goal = True, W.cell_pos(best_c)
-        return self.travel_cover(me)
+        yield (best_c, best_s)
 
     def travel_cover(self, me):
         if hyp(self.cover_goal[0] - me["pos"][0], self.cover_goal[1] - me["pos"][1]) < 1.5:
@@ -726,6 +753,7 @@ class Bot:
                     cands.append((px, py))
             self.hpend, self.hbest = cands, (math.inf, None)
         if self.hpend is not None:
+            self.trunc["home_ticks"] += 1
             while self.hpend and self.left() > 0.012:
                 px, py = self.hpend.pop()
                 c = self.home_cost(o, px, py)
