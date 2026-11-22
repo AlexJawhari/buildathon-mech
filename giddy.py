@@ -20,14 +20,14 @@ from world import World, NNX, NNY
 # range (boost energy floor), tfocus = weight of damage-per-second in target choice, arm = reach for a first laser or lightning pickup
 # before 30 s (boosting there), hold = with a laser, never walk toward a hunter that is coming for us, band = fight range as a band (gun 85-125 m, laser 110-175 m) instead of a single distance,
 # rest = after this many kills (practice), heal to 95% in cover between fights when below 75% and nobody is on us
-FLAGS = dict(uf=0, sg=0, bub=0, home2=0, end=0, drop=0, pthr=0, cap=10, dboost=25, spd=2, dheal=0.95, dcalm=200, kite=0, tfocus=1.5, arm=160, band=1, hold=1, rest=5)
+FLAGS = dict(uf=0, sg=0, bub=0, home2=0, end=0, drop=0, pthr=0, cap=10, dboost=25, spd=2, dheal=0.95, dcalm=200, kite=30, tfocus=1.5, arm=160, band=1, hold=1, rest=5)
 FLAGS.update(json.loads(os.environ.get("MECH_FLAGS", "{}")))
 F = FLAGS
 LAT = 0.075
 hyp = math.hypot
 PI = math.pi
 SOFT = 0.034  # soft deadline per decision, seconds
-SALT = 103  # mixed into the RNG seed; change it to re-roll strafing and home choices
+SALT = 104  # mixed into the RNG seed; change it to re-roll strafing and home choices
 
 BASE = dict(RetreatHP=0.38, RecoverHP=0.8, GunRange=85, LightRange=28, LaserRange=85, EngageDist=60, FarmNPC=True, Ghost=True,
             HomeExpo=120, LootRadius=90, CrateUntil=150, Dodge=True, NoMortar=True, Peek=True, LaserFirst=True, CrowdHide=True,
