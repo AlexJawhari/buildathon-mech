@@ -19,8 +19,8 @@ from world import World, NNX, NNY
 # supply drop within 250 m, dcalm = go for supply drops when calm (max distance), kite = back away fast from hunters closer than our
 # range (boost energy floor), tfocus = weight of damage-per-second in target choice, arm = reach for a first laser or lightning pickup
 # before 30 s (boosting there), hold = with a laser, never walk toward a hunter that is coming for us, band = fight range as a band (gun 85-125 m, laser 110-175 m) instead of a single distance,
-# rest = after this many kills (practice), heal to 95% in cover between fights when below 75% and nobody is on us
-FLAGS = dict(uf=0, sg=0, bub=0, home2=0, end=0, drop=0, pthr=0, cap=10, dboost=25, spd=2, dheal=0.95, dcalm=200, kite=30, tfocus=1.5, arm=160, band=1, hold=1, rest=5)
+# cc = when no spot hides us from every mech, hide from this many worst attackers (by recent damage, then distance), rest = after this many kills (practice), heal to 95% in cover between fights when below 75% and nobody is on us
+FLAGS = dict(uf=0, sg=0, bub=0, home2=0, end=0, drop=0, pthr=0, cap=10, dboost=25, spd=2, dheal=0.95, dcalm=200, kite=30, tfocus=1.5, arm=160, band=1, hold=1, rest=5, cc=0)
 FLAGS.update(json.loads(os.environ.get("MECH_FLAGS", "{}")))
 F = FLAGS
 LAT = 0.075
@@ -124,6 +124,7 @@ class Bot:
         self.thr = {}
         self.kiting = False
         self.resting = False
+        self.cc_fail = -100.0
         self.dh_id, self.dh_since = -1, 0.0
         self.fights = []
         self.csearch, self.cs_best, self.cs_touch, self.cs_deadline = None, (-1, math.inf), 0.0, 0.0
@@ -603,6 +604,9 @@ class Bot:
                 return self.travel_cover(me)
             threats = sorted((t for t in seen if hyp(t.pos[0] - x, t.pos[1] - y) < 230),
                              key=lambda t: hyp(t.pos[0] - x, t.pos[1] - y))[:4]
+            if F["cc"] and self.now - self.cc_fail < 3:  # no spot hidden from all: hide from the worst attackers only
+                threats = sorted((t for t in threats if t.los or self.now - t.hit_me < 3),
+                                 key=lambda t: -self.thr.get(t.id, (0.0, 0.0))[0] * math.exp(-(self.now - self.thr.get(t.id, (0.0, 0.0))[1]) / 6))[:F["cc"]]
             if not threats:
                 return None
             self.cover_at = self.now
@@ -625,6 +629,8 @@ class Bot:
             self.cover_at = self.now
             if r[0] < 0:
                 self.cover_ok = False
+                if F["cc"] and self.now - self.cc_fail >= 3:
+                    self.cc_fail = self.now
                 return None
             self.cover_ok, self.cover_goal = True, self.W.cell_pos(r[0])
             return self.travel_cover(me)
