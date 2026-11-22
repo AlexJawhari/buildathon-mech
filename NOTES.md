@@ -89,3 +89,8 @@ Kit example bot in the same sim: 1.02 (real baseline 1.15). Final v2 bot: about 
 - New bot params (defaults keep behaviour): `heal_to` 0.85, `dcross` 6, `dwt` 1.5, `dmin_e` 12, `ring_frac` 0.8.
 - `sim/sweep.py` random search over P (stage A random configs, B re-run of the top on fresh seeds, C mutation of the best), `sim/top.py` prints the best rows of the CSV.
 - AA = W (dboost, mortar, lcap 120, pick_r0 120) with the heal-to-95% retreat exit from the open-source 5.0 bot (`hyst` 1, `heal_to` 0.95, retreat below 50%). Conflicts with the "heal costs 0.19" ablation, so this is a direct real-board test of heal.
+
+## Round 6: ideas from a public 6.29 bot (all behind P flags, default values in bot.py)
+
+- 750c031 (laser push): `lseek` laser pickup radius 300 m quiet / 70 m hot, `sweep` + `scan0_t` 3 spin scan and a 360 deg sweep every 6 s while laserless, `jet` jump-boost viewpoint during sweeps, `lsr` stand off at 125-155 m with a laser (targets to 200 m), `lethal` early laser release when the partial charge kills. `hyst` 0 (W behaviour). Sim n=40: 6.35 vs W 4.95; n=100 same bot 5.60.
+- Next commit (laser push + hunt): `harm` harmless-mech classification, `nofirst` no first strike while laserless, `hunt` walk to remembered mechs/sounds with a laser, `dpf` drops while fighting, `finish` no retreat when the target is nearly dead, `site` kill-site cubes for 40 s, `upg` 3 survivability-first upgrades, `acc` acceleration term in the gun lead. Sim does not model the squad reacting to kills or stealth, so its numbers for these are weak evidence.
