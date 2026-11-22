@@ -28,7 +28,7 @@ P = {"retreat_hp": 0.5, "outnum": 2, "lo": 55, "hi": 110, "home_frac": 0.9, "sca
      "lseek": 1, "lfar": 300, "lhot": 70, "sweep": 1, "scan0_t": 3.0, "jet": 1, "lsr": 1, "lethal": 1,
      "harm": 0, "nofirst": 0, "hunt": 0, "dpf": 0, "finish": 0, "site": 0, "acc": 0,
      # round 7: ideas from public 6.2-6.4 bots (see TECHNIQUES.md), all default off
-     "fm": 1, "lose": 1, "eng2": 0, "fin": 0, "salt": 0, "late_r": 70}
+     "fm": 0, "lose": 1, "eng2": 0, "fin": 0, "salt": 0, "late_r": 70}
 if os.environ.get("MECH_P"):
     P.update(json.loads(os.environ["MECH_P"]))
 
@@ -42,7 +42,7 @@ def dist2(a, b):
 
 
 class Bot:
-    name = "mech-ad-peek-lose"
+    name = "mech-ae-lose-upg"
 
     def __init__(self, hello):
         cfg = hello["config"]
@@ -307,7 +307,7 @@ class Bot:
             self.strafe_until = t + 0.5
         # visibility to the target (the one LOS per candidate) and to the other mechs (top few only)
         for c in cands:
-            if time.perf_counter() - t0 > 0.016:
+            if time.perf_counter() - t0 > 0.010:
                 break
             gz = w.ground(c[1], c[2])
             los = w.los((c[1], c[2], gz + 7), (ex, ey, tz), 3.0)
@@ -321,7 +321,7 @@ class Bot:
         others = [m for m in mechs if m is not tg and m["d"] < 170][:2]
         if others:
             for c in cands[:5]:
-                if time.perf_counter() - t0 > 0.019:
+                if time.perf_counter() - t0 > 0.013:
                     break
                 gz = w.ground(c[1], c[2])
                 for m in others:
