@@ -43,7 +43,7 @@ class Bot:
     def __init__(self, hello):
         cfg = hello["config"]
         self.cfg = cfg
-        self.rng = random.Random(hello.get("seed", 0) * 1000003 + 7)
+        self.rng = random.Random(hello.get("seed", 0) * 1000003 + 8)
         self.w = World(hello["map"]["dir"])
         nav = self.w.nav
         self.cblock = bytearray()
