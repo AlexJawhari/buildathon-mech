@@ -14,14 +14,18 @@ from world import World, NNX, NNY
 # survival-layer switches (A/B with MECH_FLAGS='{"uf":0}'): uf = cover and keep moving under fire in every mode, sg = skip contested
 # weapons and give up slow ones, bub = stay out of other mechs' fights, home2 = off-centre hiding spots that respect the shrinking
 # circle, end = heal before looting and pick on clearly weaker mechs in the end game, drop = supply drops when young, near and safe
-FLAGS = dict(uf=0, sg=0, bub=0, home2=0, end=0, drop=0, pthr=2)
+# practice-side levers: cap = stop collecting cubes at this many (0 off), dboost = boost while dodging a shot above this energy,
+# spd = upgrade order (1 speed after plating/armor, 2 nanites+speed first), dheal = HP share below which a fight or retreat heads for a
+# supply drop within 250 m, dcalm = go for supply drops when calm (max distance), kite = back away fast from hunters closer than our
+# range (boost energy floor), tfocus = weight of damage-per-second in target choice
+FLAGS = dict(uf=0, sg=0, bub=0, home2=0, end=0, drop=0, pthr=0, cap=10, dboost=25, spd=2, dheal=0.95, dcalm=200, kite=0, tfocus=0)
 FLAGS.update(json.loads(os.environ.get("MECH_FLAGS", "{}")))
 F = FLAGS
 LAT = 0.075
 hyp = math.hypot
 PI = math.pi
 SOFT = 0.034  # soft deadline per decision, seconds
-SALT = int(os.environ.get("MECH_SALT", 0))  # mixed into the RNG seed; change it to re-roll strafing and home choices
+SALT = 101  # mixed into the RNG seed; change it to re-roll strafing and home choices
 
 BASE = dict(RetreatHP=0.38, RecoverHP=0.8, GunRange=85, LightRange=28, LaserRange=85, EngageDist=60, FarmNPC=True, Ghost=True,
             HomeExpo=120, LootRadius=90, CrateUntil=150, Dodge=True, NoMortar=True, Peek=True, LaserFirst=True, CrowdHide=True,
@@ -35,6 +39,10 @@ _TAIL = ["gun_mag", "gun_velocity", "gyros", "lightning_chain", "reactor", "capa
          "mortar_velocity", "sensors", "jets", "laser_pierce"]
 ORDER = ["plating", "armor", "gun_damage", "nanites", "gun_rate", "lightning_efficiency", "lightning_range", "laser_damage",
          "servos", "laser_charge"] + _TAIL
+ORDER_SPEED1 = ["plating", "armor", "servos", "jets", "reactor", "laser_damage", "laser_charge", "nanites", "gun_damage", "gun_rate",
+                "lightning_efficiency", "lightning_range"] + _TAIL
+ORDER_SPEED2 = ["plating", "armor", "nanites", "servos", "jets", "laser_damage", "laser_charge", "reactor", "gun_damage", "gun_rate",
+                "lightning_efficiency", "lightning_range"] + _TAIL
 ORDER_LASER = ["plating", "armor", "laser_damage", "laser_charge", "nanites", "gun_damage", "gun_rate", "lightning_efficiency",
                "lightning_range", "servos"] + _TAIL
 WEAPON_RANK = {"lightning": 3, "laser": 2, "mortar": 1}
@@ -111,6 +119,8 @@ class Bot:
         self.stick_id, self.stick_at, self.lose_at = 0, 0.0, 0.0
         self.t0 = 0.0
         self.mode = ""
+        self.thr = {}
+        self.kiting = False
         self.fights = []
         self.csearch, self.cs_best, self.cs_touch, self.cs_deadline = None, (-1, math.inf), 0.0, 0.0
         self.trunc = {"cover": 0, "cover_n": 0, "fight": 0, "fight_n": 0, "astar_ticks": 0, "home_ticks": 0, "slow": 0, "n": 0}
@@ -199,6 +209,9 @@ class Bot:
                 if e.get("weapon") == "npc" and e.get("bearing") is not None:
                     self.npc_hurt, self.npc_bearing = now, e["bearing"]
                 if by is not None:
+                    if F["tfocus"] and e.get("weapon") not in ("npc", "zone"):
+                        v, t0 = self.thr.get(by, (0.0, now))
+                        self.thr[by] = (v * math.exp(-(now - t0) / 6) + e.get("amount", 0), now)
                     self.last_hurt = now
                     if e.get("bearing") is not None:
                         self.hurt_bearing = e["bearing"]
@@ -498,7 +511,7 @@ class Bot:
         cube, cube_d = None, math.inf
         for c in self.cubes.values():
             d = hyp(c.pos[0] - x, c.pos[1] - y)
-            if d < 40 and d < cube_d and abs(c.pos[2] - me["pos"][2]) < 4:
+            if d < 40 and d < cube_d and abs(c.pos[2] - me["pos"][2]) < 4 and not self.capped(me):
                 cube, cube_d = c, d
         self.trunc["fight_n"] += 1
         best, bmx, bmy = -math.inf, 0.0, 0.0
@@ -506,6 +519,8 @@ class Bot:
         rings = 2 if P.Peek else 1
         z = o["zone"]
         near_seen = [e for e in seen if e is not tg]
+        kite = bool(F["kite"]) and self.prac_on and tg.kind == "mech" and bd < rp - 15
+        self.kiting = False
         for k in range(-1, 16 * rings):
             cx, cy, dx, dy, r = x, y, 0.0, 0.0, 0.0
             if k >= 0:
@@ -522,6 +537,8 @@ class Bot:
             cz = W.walk_at(cx, cy)
             d = hyp(tg.pos[0] - cx, tg.pos[1] - cy)
             s = -1.1 * abs(d - rp) - r * 0.4
+            if kite:
+                s += 2.5 * (d - bd)
             los = W.clear(cx, cy, cz + mh, tc[0], tc[1], tc[2])
             if los:
                 s += 45 * want_los
@@ -552,6 +569,8 @@ class Bot:
                     s += 14
             if s > best:
                 best, bmx, bmy = s, dx, dy
+        if kite and bmx * ux + bmy * uy < -0.3:
+            self.kiting = True
         if blocked_side:
             self.strafe = -self.strafe
             self.strafe_until = self.now + 0.5
@@ -681,6 +700,24 @@ class Bot:
                     return True
         return False
 
+    def capped(self, me):
+        return bool(F["cap"]) and me["cubes"] >= F["cap"]
+
+    def heal_drop(self, o, x, y):
+        """Nearest supply drop that we can reach once it lands, inside the circle, not being captured by another mech."""
+        me = o["self"]
+        cur = self.cur_zone(o["zone"])
+        walk = me["stats"]["walk_speed"]
+        best, bd = None, 250.0
+        for d in o["drops"]:
+            dist = hyp(d["pos"][0] - x, d["pos"][1] - y)
+            if dist >= bd or d["lands_in"] > dist * 1.3 / walk + 6 or hyp(d["pos"][0] - cur[0], d["pos"][1] - cur[1]) > cur[2] - 6:
+                continue
+            if d["holder"] not in (None, me["id"]) and d["progress"] > d["capture_s"] * 0.5:
+                continue
+            best, bd = d, dist
+        return best
+
     def cube_cap(self):
         return self.cfg["cubes"]["stat_cap"]
 
@@ -730,11 +767,12 @@ class Bot:
                     v = max(v, 150)
                 consider("pickup", p.id, p.pos, v)
         cube_v = 25.0 if me["cubes"] >= self.cube_cap() else 75.0
+        capd = self.capped(me)
         for c in self.cubes.values():
-            if hyp(c.pos[0] - x, c.pos[1] - y) < max(60, P.LootRadius * 0.7):
+            if not capd and hyp(c.pos[0] - x, c.pos[1] - y) < max(60, P.LootRadius * 0.7):
                 consider("cube", c.id, c.pos, cube_v)
         farm_hp = P.FarmHP if P.FarmHP > 0 else 0.7
-        if hp_frac > farm_hp and not danger and now < P.CrateUntil:
+        if hp_frac > farm_hp and not danger and now < P.CrateUntil and not capd:
             for c in self.crates.values():
                 if hyp(c.pos[0] - x, c.pos[1] - y) < P.LootRadius:
                     consider("crate", c.id, c.pos, cube_v * 0.6)
@@ -742,6 +780,13 @@ class Bot:
                 for n in self.npcs.values():
                     if now - n.seen < 12 and hyp(n.pos[0] - x, n.pos[1] - y) < P.LootRadius:
                         consider("npc", n.id, n.pos, 85)
+        if F["dcalm"] and not danger:
+            for d in o["drops"]:
+                dx_, dy_ = d["pos"][0] - x, d["pos"][1] - y
+                dist = hyp(dx_, dy_)
+                if dist < F["dcalm"] and dist * 1.3 / walk < d["lands_in"] + 8 and (d["holder"] in (None, me["id"]) or d["progress"] < 2) and \
+                        not any(now - t.seen < 4 and hyp(t.pos[0] - d["pos"][0], t.pos[1] - d["pos"][1]) < 20 for t in self.tracks.values()):
+                    consider("drop", d["id"], d["pos"], 260)
         if F["drop"] and not danger and hp_frac > 0.5:
             for d in o["drops"]:
                 dist = hyp(d["pos"][0] - x, d["pos"][1] - y)
@@ -838,7 +883,7 @@ class Bot:
         weapons = me["weapons"]
 
         if o.get("offer") and o["offer"].get("choices"):
-            order = ORDER_LASER if P.LaserUp else ORDER
+            order = (ORDER_SPEED1, ORDER_SPEED2)[F["spd"] - 1] if F["spd"] else ORDER_LASER if P.LaserUp else ORDER
             best, br = 0, 1 << 30
             for i, c in enumerate(o["offer"]["choices"]):
                 r = order.index(c["id"]) if c["id"] in order else len(order)
@@ -885,6 +930,9 @@ class Bot:
                 s -= 40
             if t.closing > 3:
                 s -= 15
+            if F["tfocus"] and t.id in self.thr:
+                v, t0 = self.thr[t.id]
+                s -= F["tfocus"] * v * math.exp(-(now - t0) / 6) / 6
             if s < best_score:
                 best_score, target = s, t
         if target is not None:
@@ -935,6 +983,9 @@ class Bot:
         zone_must = not me["in_zone"] or now + t_need + 3 >= deadline
         zone_should = now + t_need + 14 >= deadline
 
+        dh = None
+        if F["dheal"] and hp_frac < F["dheal"] and (self.retreat or target is not None) and me["in_zone"]:
+            dh = self.heal_drop(o, x, y)
         esc, emx, emy, eboost, esc_jump = self.escape(me)
         shell = None
         cm = None
@@ -951,6 +1002,12 @@ class Bot:
             mx, my = self.travel(me, zgx, zgy)
             boost = (not me["in_zone"] or now + t_need >= deadline) and energy > 5
             mode = "zone"
+        elif dh is not None:
+            mx, my = self.travel(me, dh["pos"][0], dh["pos"][1])
+            if hyp(dh["pos"][0] - x, dh["pos"][1] - y) < 3:
+                mx = my = 0.0
+            boost = energy > 20 and (mx != 0 or my != 0)
+            mode = "dheal"
         elif self.retreat and not finishing and not late:
             cm = self.cover_move(o, seen)
             if cm is not None:
@@ -993,8 +1050,11 @@ class Bot:
                 mx, my = self.fight_move(o, foe, seen, want_los)
             if light is not None and foe.dist > 50 and energy > 55 and want_los > 0:
                 boost = True
+            if self.kiting and energy > (60 if light is not None else F["kite"]) and not (laser is not None and laser.get("charge", 0) > 0.05) \
+                    and not (P.Finish > 0 and foe.hp < 0.38 * foe.max_hp and hp_frac > 0.42 and crowd <= 2):
+                boost = True
             mode = "fight"
-            if P.FightLoot > 0:
+            if P.FightLoot > 0 and not self.capped(me):
                 r = P.FightLoot * (0.57 if hp_frac <= 0.5 else 1)
                 bc = None
                 for c in self.cubes.values():
@@ -1056,7 +1116,7 @@ class Bot:
                 l = hyp(mx, my)
                 if l > 1:
                     mx, my = mx / l, my / l
-                if lz and energy > 25:
+                if (lz and energy > 25) or (F["dboost"] and energy > F["dboost"]):
                     boost = True
 
         if mode == "escape":
