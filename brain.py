@@ -10,7 +10,7 @@ import base
 import plan
 from base import P, TAU, UPG67, dist2, wrap
 
-V = {"idle_k": 0.9, "juke_all": 0, "nofirst": 0, "harm": 0, "hunt": 1, "dp": 1, "site": 1, "salt": 0}
+V = {"explore": 120, "farm": 1, "idle_k": 0.9, "juke_all": 0, "nofirst": 0, "harm": 0, "hunt": 1, "dp": 1, "site": 1, "salt": 0}
 if os.environ.get("MECH_V"):
     V.update(json.loads(os.environ["MECH_V"]))
 P.update(acc=1, site=V["site"], harm=V["harm"], salt=V["salt"], lethal=1)
@@ -343,6 +343,15 @@ class Bot(base.Bot):
         ch = self.econ_choice(obs, me, wpn, close)
         if ch and ch[0] == "cube" and me["cubes"] >= 10:
             ch = None  # past the stat cap cubes only make us a bigger target
+        farm = None
+        if V["farm"] and target is None and not close and hp > 0.6 * mhp and t < 200 and self.pick_goal(obs, wpn) is None:
+            for kind_, lst in (("npc", npcs), ("crate", obs["crates"])):
+                for m in lst:
+                    d_ = dist2(m["pos"], pos)
+                    if d_ < 100 and dist2(m["pos"], zc) < zr - 30 and (farm is None or d_ < farm[0]):
+                        farm = (d_, m, kind_)
+            if farm and ftg is None:
+                ftg, tkind = farm[1], farm[2]
         threats = self.threats(mechs, me, t)
         sgoal = self.safe_goal(obs)
         retreat = self.want_retreat(obs, me, mechs, target, t)
@@ -389,6 +398,17 @@ class Bot(base.Bot):
                 sg = self.site_goal(obs, t)
                 if sg:
                     mode, goal = "loot", sg
+            if mode == "idle" and farm:
+                mode, goal = "fight", farm[1]["pos"][:2]
+            if mode == "idle" and t < V["explore"] and slot1 is None and hp > 0.6 * mhp and not close:
+                if self.xgoal is None or t - self.xt > 25 or dist2(self.xgoal, pos) < 20:
+                    for _ in range(12):
+                        a_, r_ = self.rng.uniform(0, TAU), self.rng.uniform(120, 260)
+                        c_ = (pos[0] + r_ * math.cos(a_), pos[1] + r_ * math.sin(a_))
+                        if not self.w.blocked_nav(*c_) and dist2(c_, zc) < zr - 60:
+                            self.xgoal, self.xt = c_, t; break
+                if self.xgoal is not None:
+                    mode, goal = "loot", self.xgoal
             if mode == "idle":
                 goal = sgoal
         # weapon pickup
@@ -413,7 +433,7 @@ class Bot(base.Bot):
         pref = 0.0
         navgoal = goal
         if mode == "fight":
-            pref = self.pref_range(me, target, slot1, has_laser, t)
+            pref = self.pref_range(me, target, slot1, has_laser, t) if target is not None else 45.0
             if d0 <= pref + BAND:
                 navgoal = None
         elif mode == "idle" and d0 < 6:
@@ -451,7 +471,7 @@ class Bot(base.Bot):
             slow=0.5 if (self.holding or (slot1 == "laser" and me["weapons"][1].get("charge", 0) > 0)) else 1.0,
             can_boost=can_boost, navdir=nav if nav and (nav[0] or nav[1]) else None,
             goal=navgoal if nav is None else None, gw=plan.GOAL_W[mode],
-            target=(target["pos"][0], target["pos"][1], target["pos"][2] + 4.5) if (mode == "fight" and target) else None,
+            target=(goal[0], goal[1], (target["pos"][2] if target else pos[2]) + 4.5) if mode == "fight" else None,
             pref=pref, band=BAND, armed=bool(me["weapons"][0] and me["weapons"][0]["ammo"] > 0) or slot1 is not None,
             threats=threats, shots=shots, shells=shells,
             zones=[self.zone_at(obs["zone"], t + (k + 1) * plan.DT) for k in range(plan.N)], dps=obs["zone"]["dps"],
