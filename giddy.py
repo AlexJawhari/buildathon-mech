@@ -18,15 +18,16 @@ from world import World, NNX, NNY
 # spd = upgrade order (1 speed after plating/armor, 2 nanites+speed first), dheal = HP share below which a fight or retreat heads for a
 # supply drop within 250 m, dcalm = go for supply drops when calm (max distance), kite = back away fast from hunters closer than our
 # range (boost energy floor), tfocus = weight of damage-per-second in target choice, arm = reach for a first laser or lightning pickup
-# before 30 s (boosting there), band = fight range as a band (gun 85-125 m, laser 110-175 m) instead of a single distance
-FLAGS = dict(uf=0, sg=0, bub=0, home2=0, end=0, drop=0, pthr=0, cap=10, dboost=25, spd=2, dheal=0.95, dcalm=200, kite=0, tfocus=1.5, arm=160, band=1)
+# before 30 s (boosting there), hold = with a laser, never walk toward a hunter that is coming for us, band = fight range as a band (gun 85-125 m, laser 110-175 m) instead of a single distance,
+# rest = after this many kills (practice), heal to 95% in cover between fights when below 75% and nobody is on us
+FLAGS = dict(uf=0, sg=0, bub=0, home2=0, end=0, drop=0, pthr=0, cap=10, dboost=25, spd=2, dheal=0.95, dcalm=200, kite=0, tfocus=1.5, arm=160, band=1, hold=1, rest=5)
 FLAGS.update(json.loads(os.environ.get("MECH_FLAGS", "{}")))
 F = FLAGS
 LAT = 0.075
 hyp = math.hypot
 PI = math.pi
 SOFT = 0.034  # soft deadline per decision, seconds
-SALT = 102  # mixed into the RNG seed; change it to re-roll strafing and home choices
+SALT = 103  # mixed into the RNG seed; change it to re-roll strafing and home choices
 
 BASE = dict(RetreatHP=0.38, RecoverHP=0.8, GunRange=85, LightRange=28, LaserRange=85, EngageDist=60, FarmNPC=True, Ghost=True,
             HomeExpo=120, LootRadius=90, CrateUntil=150, Dodge=True, NoMortar=True, Peek=True, LaserFirst=True, CrowdHide=True,
@@ -122,6 +123,8 @@ class Bot:
         self.mode = ""
         self.thr = {}
         self.kiting = False
+        self.resting = False
+        self.dh_id, self.dh_since = -1, 0.0
         self.fights = []
         self.csearch, self.cs_best, self.cs_touch, self.cs_deadline = None, (-1, math.inf), 0.0, 0.0
         self.trunc = {"cover": 0, "cover_n": 0, "fight": 0, "fight_n": 0, "astar_ticks": 0, "home_ticks": 0, "slow": 0, "n": 0}
@@ -505,6 +508,9 @@ class Bot:
                 hi = rp + 40
             elif rp == P.LaserRange and laser is not None:
                 lo, hi = rp - 10, min(rp + 55, laser["stats"]["range"] - 15)
+        if F["hold"] and tg.kind == "mech" and self.weapon(me, "laser") is not None and (self.now - tg.hit_me < 8 or tg.closing > 3) \
+                and tg.hp >= 0.38 * tg.max_hp:
+            hi = 1e9
         bx, by = tg.pos[0] - x, tg.pos[1] - y
         bd = hyp(bx, by) + 1e-9
         ux, uy = bx / bd, by / bd
@@ -723,7 +729,17 @@ class Bot:
                 continue
             if d["holder"] not in (None, me["id"]) and d["progress"] > d["capture_s"] * 0.5:
                 continue
+            if self.bad.get(d["id"], 0) > self.now:
+                continue
             best, bd = d, dist
+        if best is not None:
+            if best["id"] != self.dh_id:
+                self.dh_id, self.dh_since = best["id"], self.now
+            elif self.now - self.dh_since > 20:  # stuck at a contested ring
+                self.bad[best["id"]] = self.now + 60
+                return None
+        else:
+            self.dh_id = -1
         return best
 
     def cube_cap(self):
@@ -985,6 +1001,11 @@ class Bot:
             if losing:
                 self.lose_at = now
             self.retreat = now - self.lose_at < 1.5 and self.lose_at > 0
+        if F["rest"] and self.prac_on and self.kills >= F["rest"] and not self.retreat:
+            calm = now - self.last_hurt > 1 and not any(t.engage for t in seen) and \
+                all(t.dist > 70 for t in seen if t.seen == now and t.kind == "mech")
+            self.resting = calm and hp_frac < (0.95 if self.resting else 0.75)
+            self.retreat = self.resting
 
         mx = my = 0.0
         boost = False
